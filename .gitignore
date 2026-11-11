@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.next/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+tsconfig.tsbuildinfo
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+.DS_Store

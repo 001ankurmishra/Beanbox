@@ -1,0 +1,865 @@
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Literal
+
+import bcrypt
+
+from app.models.domain import (
+    Address,
+    Coupon,
+    Order,
+    OrderAddressSnapshot,
+    OrderItem,
+    OrderPricing,
+    Product,
+    ProductCategory,
+    ProductVariant,
+    Review,
+    RoastLevel,
+    User,
+    WishlistItem,
+)
+
+# Pre-hashed once at module import so test suites spin up isolated seeded apps in <2ms
+_ADMIN_PASSWORD_HASH = bcrypt.hashpw(
+    b"Admin@1234", bcrypt.gensalt(rounds=10)
+).decode("utf-8")
+_CUSTOMER_PASSWORD_HASH = bcrypt.hashpw(
+    b"Coffee@1234", bcrypt.gensalt(rounds=10)
+).decode("utf-8")
+
+
+@dataclass
+class SeedDataset:
+    users: list[User]
+    products: list[Product]
+    coupons: list[Coupon]
+    addresses: list[Address]
+    orders: list[Order]
+    reviews: list[Review]
+    wishlist: list[WishlistItem]
+
+
+def _make_coffee_variants(
+    sku_prefix: str,
+    base_250g_inr: int,
+    mode: Literal["beans", "ground"],
+    stock_250_whole: int = 24,
+    stock_250_ground: int = 16,
+    stock_500: int = 14,
+    stock_1kg: int = 8,
+) -> list[ProductVariant]:
+    p250 = base_250g_inr * 100
+    p500 = round(base_250g_inr * 1.85) * 100
+    p1kg = round(base_250g_inr * 3.45) * 100
+    prefix_low = sku_prefix.lower()
+
+    if mode == "beans":
+        return [
+            ProductVariant(
+                id=f"{prefix_low}-250-wb",
+                sku=f"{sku_prefix}-250-WB",
+                size="250g",
+                grind="whole_bean",
+                label="250g · Whole Bean",
+                price_paise=p250,
+                compare_at_paise=p250 + 5000,
+                stock=stock_250_whole,
+            ),
+            ProductVariant(
+                id=f"{prefix_low}-250-esp",
+                sku=f"{sku_prefix}-250-ESP",
+                size="250g",
+                grind="espresso",
+                label="250g · Espresso Grind",
+                price_paise=p250,
+                stock=stock_250_ground,
+            ),
+            ProductVariant(
+                id=f"{prefix_low}-500-wb",
+                sku=f"{sku_prefix}-500-WB",
+                size="500g",
+                grind="whole_bean",
+                label="500g · Whole Bean",
+                price_paise=p500,
+                compare_at_paise=p500 + 8000,
+                stock=stock_500,
+            ),
+            ProductVariant(
+                id=f"{prefix_low}-1kg-wb",
+                sku=f"{sku_prefix}-1KG-WB",
+                size="1kg",
+                grind="whole_bean",
+                label="1kg · Whole Bean",
+                price_paise=p1kg,
+                compare_at_paise=p1kg + 15000,
+                stock=stock_1kg,
+            ),
+        ]
+
+    return [
+        ProductVariant(
+            id=f"{prefix_low}-250-flt",
+            sku=f"{sku_prefix}-250-FLT",
+            size="250g",
+            grind="filter",
+            label="250g · Filter Grind",
+            price_paise=p250,
+            compare_at_paise=p250 + 4000,
+            stock=stock_250_ground,
+        ),
+        ProductVariant(
+            id=f"{prefix_low}-250-fp",
+            sku=f"{sku_prefix}-250-FP",
+            size="250g",
+            grind="french_press",
+            label="250g · French Press Grind",
+            price_paise=p250,
+            stock=15,
+        ),
+        ProductVariant(
+            id=f"{prefix_low}-500-flt",
+            sku=f"{sku_prefix}-500-FLT",
+            size="500g",
+            grind="filter",
+            label="500g · Filter Grind",
+            price_paise=p500,
+            stock=stock_500,
+        ),
+        ProductVariant(
+            id=f"{prefix_low}-1kg-flt",
+            sku=f"{sku_prefix}-1KG-FLT",
+            size="1kg",
+            grind="filter",
+            label="1kg · Filter Grind",
+            price_paise=p1kg,
+            stock=stock_1kg,
+        ),
+    ]
+
+
+def create_seed_data() -> SeedDataset:
+    base_dt = datetime(2026, 10, 15, 9, 0, 0, tzinfo=timezone.utc)
+    now = base_dt.isoformat().replace("+00:00", "Z")
+    delivered_at = "2026-10-20T14:30:00Z"
+
+    admin_id = "11111111-1111-4111-8111-111111111111"
+    customer_id = "22222222-2222-4222-8222-222222222222"
+
+    users = [
+        User(
+            id=admin_id,
+            name="Meera Nair (Roaster Admin)",
+            email="admin@beanbox.in",
+            phone="9880123456",
+            password_hash=_ADMIN_PASSWORD_HASH,
+            role="admin",
+            created_at=now,
+            updated_at=now,
+        ),
+        User(
+            id=customer_id,
+            name="Arjun Sharma",
+            email="arjun@beanbox.in",
+            phone="9820456789",
+            password_hash=_CUSTOMER_PASSWORD_HASH,
+            role="customer",
+            created_at=now,
+            updated_at=now,
+        ),
+    ]
+
+    addresses = [
+        Address(
+            id="addr-arjun-home",
+            user_id=customer_id,
+            label="Home",
+            full_name="Arjun Sharma",
+            phone="9820456789",
+            line1="402, Indiranagar 100 Feet Road",
+            line2="Near CMH Park",
+            city="Bengaluru",
+            state="Karnataka",
+            postal_code="560038",
+            country="India",
+            is_default=True,
+            created_at=now,
+            updated_at=now,
+        )
+    ]
+
+    specs: list[
+        tuple[
+            str,
+            str,
+            str,
+            str,
+            str,
+            ProductCategory,
+            RoastLevel,
+            str,
+            list[str],
+            list[str],
+            list[ProductVariant],
+            bool,
+            float,
+            int,
+        ]
+    ] = [
+        # 1 - 7: BEANS
+        (
+            "prod-chikmagalur-arabica",
+            "Chikmagalur Baba Budangiri Arabica",
+            "chikmagalur-baba-budangiri-arabica",
+            "Shade-grown single-estate SL795 arabica from the birthplace of Indian coffee.",
+            "Harvested at 1,400m in the misty hills of Baba Budangiri, Chikmagalur. Washed and sun-dried on raised beds for balanced sweetness, creamy milk chocolate body, and a lingering roasted almond finish.",
+            "beans",
+            "medium",
+            "Chikmagalur, Karnataka",
+            ["Milk Chocolate", "Roasted Almond", "Jaggery"],
+            ["/images/products/beans-medium.svg", "/images/products/beans-light.svg"],
+            _make_coffee_variants("CHIK", 499, "beans", stock_250_whole=32),
+            True,
+            5.0,
+            1,
+        ),
+        (
+            "prod-monsoon-malabar",
+            "Coorg Monsooned Malabar AA",
+            "coorg-monsooned-malabar-aa",
+            "Iconic low-acidity monsooned specialty beans with syrupy body and warm spice.",
+            "Exposed to coastal monsoon winds along the Malabar coast after harvest in Coorg, these golden beans develop virtually zero acidity, lush velvety crema, and notes of dark cocoa, cedar, and warm nutmeg.",
+            "beans",
+            "medium_dark",
+            "Coorg, Karnataka",
+            ["Dark Cocoa", "Nutmeg", "Cedar"],
+            ["/images/products/beans-dark.svg", "/images/products/beans-medium.svg"],
+            _make_coffee_variants("MMAL", 549, "beans", stock_250_whole=3),
+            True,
+            0.0,
+            0,
+        ),
+        (
+            "prod-araku-organic",
+            "Araku Valley Tribal Organic",
+            "araku-valley-tribal-organic",
+            "Vibrant bright-roast micro-lot grown organically by smallholder farmers in Andhra Pradesh.",
+            "Grown in biodiversity-rich shade forests of the Eastern Ghats at 1,100m. Lightly roasted to spotlight crisp sweet lime acidity, wildflower honey, and juicy plum.",
+            "beans",
+            "light",
+            "Araku Valley, Andhra Pradesh",
+            ["Wild Honey", "Sweet Lime", "Plum"],
+            ["/images/products/beans-light.svg", "/images/products/beans-medium.svg"],
+            _make_coffee_variants("ARAK", 579, "beans", stock_250_whole=20),
+            True,
+            0.0,
+            0,
+        ),
+        (
+            "prod-ratnagiri-honey",
+            "Ratnagiri Estate Red Honey Process",
+            "ratnagiri-estate-red-honey",
+            "Experimental red-honey fermentation packed with stone fruit and caramel sweetness.",
+            "Handpicked ripe cherries from Ratnagiri Estate are pulped with mucilage intact and slow-dried for 18 days. Expect peach, brown butter caramel, and delicate jasmine aromatics.",
+            "beans",
+            "medium_light",
+            "Chikmagalur, Karnataka",
+            ["Peach", "Caramel", "Jasmine"],
+            ["/images/products/beans-light.svg", "/images/products/beans-medium.svg"],
+            _make_coffee_variants("RATN", 629, "beans", stock_250_whole=12),
+            True,
+            0.0,
+            0,
+        ),
+        (
+            "prod-nilgiris-blue",
+            "Nilgiris Coonoor Frost Roast",
+            "nilgiris-coonoor-frost-roast",
+            "Crisp high-altitude washed arabica layered with orange blossom and toasted hazelnut.",
+            "Cultivated amidst eucalyptus groves and cool Nilgiri winds at 1,650m. A versatile everyday medium roast that shines equally in pour-overs and AeroPress.",
+            "beans",
+            "medium",
+            "Nilgiris, Tamil Nadu",
+            ["Orange Blossom", "Hazelnut", "Toffee"],
+            ["/images/products/beans-medium.svg"],
+            _make_coffee_variants("NILG", 519, "beans", stock_250_whole=25),
+            False,
+            0.0,
+            0,
+        ),
+        (
+            "prod-espresso-crema",
+            "BeanBox House Espresso Dark",
+            "beanbox-house-espresso-dark",
+            "80% Chikmagalur Arabica, 20% Kalledevarapura Robusta engineered for tiger-striped crema.",
+            "Crafted specifically for home espresso machines and Moka pots. Cuts effortlessly through steamed milk with punchy 70% dark chocolate, toasted walnut, and brown sugar.",
+            "beans",
+            "dark",
+            "Chikmagalur, Karnataka",
+            ["70% Dark Chocolate", "Walnut", "Molasses"],
+            ["/images/products/beans-dark.svg"],
+            _make_coffee_variants("ESPR", 469, "beans", stock_250_whole=40),
+            False,
+            0.0,
+            0,
+        ),
+        (
+            "prod-ethiopia-yirgacheffe",
+            "Ethiopia Yirgacheffe Washed Micro-Lot",
+            "ethiopia-yirgacheffe-washed",
+            "Tea-like floral single origin with bergamot, jasmine, and bright Meyer lemon.",
+            "Imported green and small-batch roasted fresh every Tuesday in our Bengaluru roastery. Clean, sparkling cup crafted for V60 and Chemex enthusiasts.",
+            "beans",
+            "light",
+            "Yirgacheffe, Ethiopia",
+            ["Bergamot", "Jasmine", "Meyer Lemon"],
+            ["/images/products/beans-light.svg"],
+            _make_coffee_variants("ETHY", 749, "beans", stock_250_whole=4),
+            True,
+            0.0,
+            0,
+        ),
+        # 8 - 11: GROUND
+        (
+            "prod-south-indian-kaapi",
+            "Madras Heritage Filter Kaapi (80:20)",
+            "madras-heritage-filter-kaapi",
+            "Authentic 80% Peaberry coffee + 20% roasted chicory ground for brass degree filters.",
+            "A nostalgic homage to Mylapore morning filter kaapi. Finely calibrated medium-dark roast blended with premium Jamnagar chicory for thick, frothy decoction that pairs brilliantly with hot milk.",
+            "ground",
+            "medium_dark",
+            "Chikmagalur & Coorg",
+            ["Caramelized Sugar", "Cocoa", "Velvety Chicory"],
+            ["/images/products/ground-kaapi.svg"],
+            _make_coffee_variants("KAAP", 399, "ground", stock_250_ground=45),
+            True,
+            0.0,
+            0,
+        ),
+        (
+            "prod-100-arabica-filter",
+            "Pure Malabar 100% Arabica Filter Grind",
+            "pure-malabar-arabica-filter",
+            "Zero-chicory pure estate arabica pre-ground for drip brewers and South Indian filters.",
+            "For purists who love traditional filter decoction without chicory. Smooth, clean, naturally sweet with notes of roasted cashew and cacao nibs.",
+            "ground",
+            "medium",
+            "Coorg, Karnataka",
+            ["Roasted Cashew", "Cacao Nibs", "Honey"],
+            ["/images/products/ground-roast.svg"],
+            _make_coffee_variants("PURA", 449, "ground", stock_250_ground=28),
+            False,
+            0.0,
+            0,
+        ),
+        (
+            "prod-french-press-bold",
+            "Wayanad Bold French Press Ground",
+            "wayanad-bold-french-press",
+            "Coarsely ground high-body dark roast grown in the lush hills of Wayanad.",
+            "Precision coarse-ground right before nitrogen flushing so your French Press brews clean without silt. Deep notes of bittersweet chocolate and roasted spice.",
+            "ground",
+            "dark",
+            "Wayanad, Kerala",
+            ["Bittersweet Chocolate", "Clove", "Toasted Oak"],
+            ["/images/products/ground-roast.svg"],
+            _make_coffee_variants("WAYA", 459, "ground", stock_250_ground=19),
+            False,
+            0.0,
+            0,
+        ),
+        (
+            "prod-hazelnut-velvet",
+            "Roasted Hazelnut Craft Ground",
+            "roasted-hazelnut-craft-ground",
+            "100% Chikmagalur Arabica infused with natural Piedmont-style roasted hazelnut essence.",
+            "Zero artificial sugar or syrup—just pure specialty arabica beans infused with aromatic roasted hazelnut oil for indulgent café-style mornings at home.",
+            "ground",
+            "medium",
+            "Chikmagalur, Karnataka",
+            ["Toasted Hazelnut", "Praline", "Cream"],
+            ["/images/products/ground-kaapi.svg"],
+            _make_coffee_variants("HAZE", 479, "ground", stock_250_ground=22),
+            False,
+            0.0,
+            0,
+        ),
+        # 12 - 14: COLD BREW
+        (
+            "prod-cold-brew-concentrate",
+            "18-Hour Slow Steep Cold Brew Concentrate",
+            "18-hour-cold-brew-concentrate",
+            "Ready-to-dilute chilled concentrate bottle yielding 10 smooth glasses of iced coffee.",
+            "Steeped for 18 hours in triple-filtered water using coarsely cracked Araku & Chikmagalur beans. Simply mix 1:1 with cold water, tonic, or oat milk over ice.",
+            "cold_brew",
+            "medium_dark",
+            "Araku & Chikmagalur",
+            ["Cocoa Fudge", "Molasses", "Zero Bitterness"],
+            ["/images/products/cold-brew.svg"],
+            [
+                ProductVariant(
+                    id="cbconc-500ml",
+                    sku="CB-CONC-500",
+                    size="500g",
+                    grind="na",
+                    label="500ml Glass Bottle (10 Servings)",
+                    price_paise=54900,
+                    compare_at_paise=59900,
+                    stock=18,
+                ),
+                ProductVariant(
+                    id="cbconc-1000ml",
+                    sku="CB-CONC-1L",
+                    size="1kg",
+                    grind="na",
+                    label="1L Party Carafe (20 Servings)",
+                    price_paise=94900,
+                    stock=9,
+                ),
+            ],
+            True,
+            0.0,
+            0,
+        ),
+        (
+            "prod-cold-brew-steep-bags",
+            "Overnight Cold Brew Steep Bags (Pack of 6)",
+            "overnight-cold-brew-steep-bags",
+            "Mess-free biodegradable steep pouches—drop in water overnight, pour by morning.",
+            "Each 40g coarse-ground pouch brews 350ml of silky cold brew right in your fridge bottle. Ideal for work desks, summer afternoons, and travel.",
+            "cold_brew",
+            "medium",
+            "Coorg, Karnataka",
+            ["Milk Chocolate", "Brown Sugar", "Smooth Berry"],
+            ["/images/products/cold-brew.svg"],
+            [
+                ProductVariant(
+                    id="cbbag-250",
+                    sku="CB-BAG-6",
+                    size="250g",
+                    grind="na",
+                    label="250g · 6 Steep Bags",
+                    price_paise=42900,
+                    stock=30,
+                ),
+                ProductVariant(
+                    id="cbbag-500",
+                    sku="CB-BAG-12",
+                    size="500g",
+                    grind="na",
+                    label="500g · 12 Steep Bags",
+                    price_paise=78900,
+                    stock=15,
+                ),
+            ],
+            False,
+            0.0,
+            0,
+        ),
+        (
+            "prod-citrus-cold-brew",
+            "Valencia Orange Cold Brew Bags (Pack of 6)",
+            "valencia-orange-cold-brew-bags",
+            "Bright light-roast cold brew pouches blended with dried Nagpur orange peel.",
+            "Crisp, tea-like cold extraction lifted by natural sun-dried Nagpur orange zest. Refreshing over sparkling water or espresso tonic.",
+            "cold_brew",
+            "light",
+            "Araku Valley, Andhra Pradesh",
+            ["Valencia Orange", "Honeydew", "Earl Grey"],
+            ["/images/products/cold-brew.svg"],
+            [
+                ProductVariant(
+                    id="cborg-250",
+                    sku="CB-ORG-6",
+                    size="250g",
+                    grind="na",
+                    label="250g · 6 Steep Bags",
+                    price_paise=46900,
+                    stock=2,
+                )
+            ],
+            False,
+            0.0,
+            0,
+        ),
+        # 15 - 17: EQUIPMENT
+        (
+            "prod-ceramic-v60-kit",
+            "Artisan Ceramic Pour-Over Dripper & Carafe",
+            "artisan-ceramic-pour-over-kit",
+            "Spiral-ribbed stoneware V60 dripper with 600ml glass server and 40 paper filters.",
+            "High-thermal-retention glazed ceramic dripper engineered for even extraction and clean aromatic clarity. Includes 40 unbleached Japanese-style paper filters.",
+            "equipment",
+            "na",
+            "Jaipur Studio Craft",
+            ["Clean Clarity", "Thermal Stability", "2-4 Cups"],
+            ["/images/products/equipment-pour.svg"],
+            [
+                ProductVariant(
+                    id="eq-v60-std",
+                    sku="EQ-V60-KIT",
+                    size="standard",
+                    grind="na",
+                    label="02 Size Dripper + 600ml Carafe",
+                    price_paise=149900,
+                    compare_at_paise=179900,
+                    stock=14,
+                )
+            ],
+            True,
+            0.0,
+            0,
+        ),
+        (
+            "prod-brass-filter",
+            "Kumbakonam Pure Brass South Indian Filter",
+            "kumbakonam-brass-south-indian-filter",
+            "Heavy-gauge traditional handcrafted brass coffee filter with tamper and lid.",
+            "Artisan-spun from food-safe pure brass in Kumbakonam. Brews thick, rich decoction for 3 to 4 cups of authentic frothy degree kaapi.",
+            "equipment",
+            "na",
+            "Kumbakonam, Tamil Nadu",
+            ["Heavy Brass", "3-4 Cups", "Heirloom Quality"],
+            ["/images/products/equipment-press.svg"],
+            [
+                ProductVariant(
+                    id="eq-brass-std",
+                    sku="EQ-BRASS-4C",
+                    size="standard",
+                    grind="na",
+                    label="200ml · 3-4 Cup Filter",
+                    price_paise=119900,
+                    compare_at_paise=139900,
+                    stock=18,
+                )
+            ],
+            False,
+            0.0,
+            0,
+        ),
+        (
+            "prod-borosilicate-french-press",
+            "Double-Filter Borosilicate French Press (600ml)",
+            "borosilicate-french-press-600ml",
+            "Heat-shock resistant borosilicate press with dual stainless mesh filtration.",
+            "Brew full-bodied coffee or cold brew effortlessly. Features a copper-toned steel frame, precision dual mesh plunger for minimal sediment, and ergonomic handle.",
+            "equipment",
+            "na",
+            "Bengaluru Design Lab",
+            ["600ml Capacity", "Dual Mesh", "Full Body"],
+            ["/images/products/equipment-press.svg"],
+            [
+                ProductVariant(
+                    id="eq-fp-600",
+                    sku="EQ-FP-600",
+                    size="standard",
+                    grind="na",
+                    label="600ml · Matte Espresso Frame",
+                    price_paise=129900,
+                    stock=20,
+                )
+            ],
+            False,
+            0.0,
+            0,
+        ),
+        # 18 - 20: GIFT SETS
+        (
+            "prod-indian-estate-discovery-box",
+            "The Indian Estate Discovery Tasting Box",
+            "indian-estate-discovery-tasting-box",
+            "Four 150g signature Indian single-estate roasts curated in a keepsake linen gift box.",
+            "Explore India’s coffee terroirs side-by-side: Chikmagalur Arabica, Coorg Monsooned Malabar, Araku Valley Organic, and Ratnagiri Red Honey. Includes tasting wheel & brew guide.",
+            "gift_sets",
+            "medium",
+            "Multi-Estate India",
+            ["4 × 150g Packs", "Brew Guide Included", "Gift Ready"],
+            ["/images/products/gift-box.svg"],
+            [
+                ProductVariant(
+                    id="gift-disc-wb",
+                    sku="GIFT-DISC-WB",
+                    size="standard",
+                    grind="whole_bean",
+                    label="600g Assorted · Whole Bean",
+                    price_paise=139900,
+                    compare_at_paise=159900,
+                    stock=16,
+                ),
+                ProductVariant(
+                    id="gift-disc-flt",
+                    sku="GIFT-DISC-FLT",
+                    size="standard",
+                    grind="filter",
+                    label="600g Assorted · Filter Grind",
+                    price_paise=139900,
+                    stock=11,
+                ),
+            ],
+            True,
+            0.0,
+            0,
+        ),
+        (
+            "prod-filter-kaapi-gift-set",
+            "Filter Kaapi Heritage Gift Box",
+            "filter-kaapi-heritage-gift-box",
+            "Traditional brass filter paired with 250g Madras Heritage Kaapi and brass davara-tumbler.",
+            "Everything needed for the quintessential South Indian morning ritual. Packaged in festive kraft-and-gold gift wrapping with personalized note card.",
+            "gift_sets",
+            "medium_dark",
+            "Tamil Nadu & Karnataka",
+            ["Brass Filter", "Davara Tumbler", "250g Kaapi"],
+            ["/images/products/gift-box.svg"],
+            [
+                ProductVariant(
+                    id="gift-kaapi-std",
+                    sku="GIFT-KAAPI-SET",
+                    size="standard",
+                    grind="filter",
+                    label="Complete Brass Filter & Kaapi Set",
+                    price_paise=189900,
+                    compare_at_paise=219900,
+                    stock=9,
+                )
+            ],
+            False,
+            0.0,
+            0,
+        ),
+        (
+            "prod-pour-over-ritual-box",
+            "Morning Pour-Over Ritual Gift Box",
+            "morning-pour-over-ritual-box",
+            "Ceramic V60 Dripper Kit paired with 250g Araku Valley Organic & gooseneck thermometer guide.",
+            "Designed for the thoughtful coffee lover stepping into manual brewing. Includes our signature ceramic dripper, glass server, filter papers, and fresh Araku beans.",
+            "gift_sets",
+            "light",
+            "Araku Valley & Jaipur",
+            ["Ceramic V60 Kit", "250g Araku", "Brew Recipes"],
+            ["/images/products/gift-box.svg"],
+            [
+                ProductVariant(
+                    id="gift-po-wb",
+                    sku="GIFT-PO-WB",
+                    size="standard",
+                    grind="whole_bean",
+                    label="V60 Kit + 250g Whole Bean",
+                    price_paise=199900,
+                    compare_at_paise=229900,
+                    stock=7,
+                ),
+                ProductVariant(
+                    id="gift-po-flt",
+                    sku="GIFT-PO-FLT",
+                    size="standard",
+                    grind="filter",
+                    label="V60 Kit + 250g Filter Grind",
+                    price_paise=199900,
+                    stock=6,
+                ),
+            ],
+            False,
+            0.0,
+            0,
+        ),
+    ]
+
+    products: list[Product] = []
+    for idx, item in enumerate(specs):
+        (
+            pid,
+            name,
+            slug,
+            short_desc,
+            desc,
+            cat,
+            roast,
+            origin,
+            notes,
+            imgs,
+            variants,
+            featured,
+            r_avg,
+            r_cnt,
+        ) = item
+        created_iso = (base_dt + timedelta(minutes=idx)).isoformat().replace("+00:00", "Z")
+        products.append(
+            Product(
+                id=pid,
+                name=name,
+                slug=slug,
+                short_description=short_desc,
+                description=desc,
+                category=cat,
+                roast_level=roast,
+                origin=origin,
+                tasting_notes=notes,
+                images=imgs,
+                variants=variants,
+                is_featured=featured,
+                is_active=True,
+                rating_average=r_avg,
+                rating_count=r_cnt,
+                created_at=created_iso,
+                updated_at=now,
+            )
+        )
+
+    future_expiry = (
+        (datetime.now(timezone.utc) + timedelta(days=180))
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    past_expiry = "2025-01-01T00:00:00Z"
+
+    coupons = [
+        Coupon(
+            id="coupon-welcome10",
+            code="WELCOME10",
+            description="10% off your BeanBox order (min ₹499, max discount ₹300)",
+            type="percent",
+            value=10,
+            min_order_paise=49900,
+            max_discount_paise=30000,
+            expires_at=future_expiry,
+            usage_limit=500,
+            used_count=12,
+            is_active=True,
+            created_at=now,
+            updated_at=now,
+        ),
+        Coupon(
+            id="coupon-flat150",
+            code="FLAT150",
+            description="Flat ₹150 off on orders above ₹999",
+            type="flat",
+            value=15000,
+            min_order_paise=99900,
+            expires_at=future_expiry,
+            usage_limit=250,
+            used_count=5,
+            is_active=True,
+            created_at=now,
+            updated_at=now,
+        ),
+        Coupon(
+            id="coupon-brew20",
+            code="BREW20",
+            description="20% off specialty brews above ₹1,499 (max ₹500)",
+            type="percent",
+            value=20,
+            min_order_paise=149900,
+            max_discount_paise=50000,
+            expires_at=future_expiry,
+            usage_limit=50,
+            used_count=3,
+            is_active=True,
+            created_at=now,
+            updated_at=now,
+        ),
+        Coupon(
+            id="coupon-expired50",
+            code="EXPIRED50",
+            description="Expired archival launch promo",
+            type="percent",
+            value=50,
+            min_order_paise=29900,
+            expires_at=past_expiry,
+            usage_limit=100,
+            used_count=0,
+            is_active=True,
+            created_at=now,
+            updated_at=now,
+        ),
+    ]
+
+    orders = [
+        Order(
+            id="ord-arjun-seed-1",
+            order_number="BB-20261015-1001",
+            user_id=customer_id,
+            items=[
+                OrderItem(
+                    product_id="prod-chikmagalur-arabica",
+                    variant_id="chik-250-wb",
+                    sku="CHIK-250-WB",
+                    product_name="Chikmagalur Baba Budangiri Arabica",
+                    product_slug="chikmagalur-baba-budangiri-arabica",
+                    variant_label="250g · Whole Bean",
+                    image="/images/products/beans-medium.svg",
+                    unit_price_paise=49900,
+                    quantity=2,
+                    line_total_paise=99800,
+                )
+            ],
+            shipping_address=OrderAddressSnapshot(
+                label="Home",
+                full_name="Arjun Sharma",
+                phone="9820456789",
+                line1="402, Indiranagar 100 Feet Road",
+                line2="Near CMH Park",
+                city="Bengaluru",
+                state="Karnataka",
+                postal_code="560038",
+                country="India",
+            ),
+            pricing=OrderPricing(
+                items_subtotal_paise=99800,
+                discount_paise=0,
+                taxable_amount_paise=99800,
+                gst_rate=0.05,
+                gst_paise=4990,
+                cgst_paise=2495,
+                sgst_paise=2495,
+                shipping_paise=7900,
+                total_paise=112690,
+                currency="INR",
+            ),
+            status="delivered",
+            payment_status="paid",
+            payment_provider="mock",
+            payment_session_id="mock_sess_seed_1001",
+            payment_intent_id="mock_pi_seed_1001",
+            stock_released=False,
+            created_at=now,
+            updated_at=delivered_at,
+            paid_at=now,
+            shipped_at=now,
+            delivered_at=delivered_at,
+        )
+    ]
+
+    reviews = [
+        Review(
+            id="rev-seed-1",
+            product_id="prod-chikmagalur-arabica",
+            user_id=customer_id,
+            user_name="Arjun Sharma",
+            rating=5,
+            title="Silky chocolate finish in my morning pour-over",
+            comment="Roasted just 3 days before delivery. Clean jaggery sweetness and zero harsh bitterness.",
+            verified_purchase=True,
+            created_at=delivered_at,
+            updated_at=delivered_at,
+        )
+    ]
+
+    wishlist = [
+        WishlistItem(
+            id="wish-seed-1",
+            user_id=customer_id,
+            product_id="prod-ratnagiri-honey",
+            created_at=now,
+        )
+    ]
+
+    return SeedDataset(
+        users=users,
+        products=products,
+        coupons=coupons,
+        addresses=addresses,
+        orders=orders,
+        reviews=reviews,
+        wishlist=wishlist,
+    )

@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    background-color: #FBF7F2;
+    color: #26150E;
+  }
+
+  body {
+    min-height: 100dvh;
+    background-color: #FBF7F2;
+    color: #26150E;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    outline: 3px solid #C27035;
+    outline-offset: 2px;
+  }
+}
+
+/* Native <dialog> modal scroll containment (modern-web-guidance) */
+dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog::backdrop {
+  background: rgba(22, 11, 7, 0.55);
+  backdrop-filter: blur(2px);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+/* Responsive container-aware data tables */
+.table-scroll-region {
+  overflow: auto;
+  max-inline-size: 100%;
+  container-type: inline-size;
+}
+
+.table-scroll-region table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+}
+
+.table-scroll-region thead {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+}

@@ -1,0 +1,14 @@
+{
+  "name": "beanbox-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BeanBox specialty coffee e-commerce platform (India, INR, GST 5%) — FastAPI + Next.js 14",
+  "scripts": {
+    "dev:backend": "cd backend && .venv/bin/uvicorn app.main:app --reload --port 4000",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "test:backend": "cd backend && .venv/bin/pytest -v",
+    "seed:backend": "cd backend && .venv/bin/python -m app.seed.run_seed",
+    "build:frontend": "npm --prefix frontend run build",
+    "typecheck:frontend": "npm --prefix frontend run typecheck"
+  }
+}
