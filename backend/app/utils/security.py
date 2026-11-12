@@ -251,15 +251,13 @@ def generate_totp_qr_data_url(otpauth_url: str) -> str:
 
 
 def extract_client_ip(request: Request, settings: Settings) -> str:
-    if settings.trust_proxy_headers:
+    proxy_count = settings.trusted_proxy_count
+    if proxy_count > 0:
         xff = request.headers.get("x-forwarded-for")
         if xff:
-            first = xff.split(",")[0].strip()
-            if first:
-                return first[:64]
-        x_real = request.headers.get("x-real-ip")
-        if x_real and x_real.strip():
-            return x_real.strip()[:64]
+            parts = [part.strip() for part in xff.split(",") if part.strip()]
+            if len(parts) >= proxy_count:
+                return parts[-proxy_count][:64]
     return request.client.host if request.client else "unknown"
 
 

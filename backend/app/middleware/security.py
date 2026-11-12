@@ -61,11 +61,7 @@ def _validate_cookie_csrf(
     if request.url.path in CSRF_EXEMPT_PATHS:
         return None
 
-    # Only enforce CSRF when cookie authentication is present (and not overridden by Bearer header)
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.startswith("Bearer "):
-        return None
-
+    # Enforce CSRF + Origin whenever any auth cookie is present, even if Authorization: Bearer is also sent.
     uses_auth_cookies = bool(
         request.cookies.get("beanbox_access")
         or request.cookies.get("beanbox_refresh")

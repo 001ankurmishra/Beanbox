@@ -25,7 +25,6 @@ from app.repositories.interfaces import (
     TopProductStat,
     UpdateCouponInput,
     UpdateProductInput,
-    UpdateUserInput,
     UserRepository,
 )
 from app.schemas.common import PaginationMeta
@@ -199,6 +198,11 @@ class AdminService:
 
         now = _now_iso()
         updates = OrderUpdateFields(status=next_status)
+        should_release_stock = (
+            next_status in ("cancelled", "refunded")
+            and order.status in ("pending", "paid", "processing")
+            and not order.stock_released
+        )
 
         if next_status == "paid":
             updates.payment_status = "paid"
@@ -208,21 +212,29 @@ class AdminService:
         elif next_status == "delivered":
             updates.delivered_at = now
         elif next_status in ("cancelled", "refunded"):
-            if order.status in ("pending", "paid", "processing"):
-                self._order_service.release_order_resources(order)
+            if should_release_stock:
                 updates.stock_released = True
             if order.payment_status == "paid":
-                self._payment_provider.refund_payment(
-                    order.payment_intent_id or "", order.pricing.total_paise
-                )
                 updates.payment_status = "refunded"
             if next_status == "cancelled":
                 updates.cancelled_at = now
                 updates.cancel_reason = (reason or "").strip() or "Cancelled by administrator"
 
-        updated = self._order_repo.update_order(order.id, updates)
+        updated = self._order_repo.transition_status(
+            order.id, expected_status=order.status, updates=updates
+        )
         if not updated:
-            raise NotFoundError("Order not found")
+            raise ConflictError(
+                f"Order status changed concurrently from '{order.status}'",
+                code="INVALID_STATUS_TRANSITION",
+            )
+
+        if should_release_stock:
+            self._order_service.release_order_resources(order)
+        if next_status in ("cancelled", "refunded") and order.payment_status == "paid":
+            self._payment_provider.refund_payment(
+                order.payment_intent_id or "", order.pricing.total_paise
+            )
 
         if next_status == "shipped":
             user = self._user_repo.find_by_id(updated.user_id)
@@ -298,8 +310,14 @@ class AdminService:
         if prev_role == next_role:
             return to_public_user(user)
 
-        updated = self._user_repo.update(user.id, UpdateUserInput(role=next_role))
-        assert updated is not None
+        updated, outcome = self._user_repo.update_role_safe(user.id, next_role)
+        if outcome == "last_admin":
+            raise ConflictError(
+                "Cannot demote the last remaining administrator",
+                code="LAST_ADMIN_CANNOT_BE_DEMOTED",
+            )
+        if outcome == "not_found" or not updated:
+            raise NotFoundError("User not found")
         revoked = self._session_repo.revoke_all_for_user(user.id)
         self._audit.record(
             event_type="role_changed",

@@ -11,6 +11,7 @@ from app.repositories.interfaces import (
     CreateCouponInput,
     UpdateCouponInput,
 )
+from app.utils.errors import ConflictError
 
 
 def _now_iso() -> str:
@@ -50,24 +51,27 @@ class InMemoryCouponRepository(CouponRepository):
 
     def create(self, data: CreateCouponInput) -> Coupon:
         now = _now_iso()
-        coupon = Coupon(
-            id=str(uuid4()),
-            code=data.code.strip().upper(),
-            description=data.description,
-            type=data.type,
-            value=data.value,
-            min_order_paise=data.min_order_paise,
-            max_discount_paise=data.max_discount_paise,
-            expires_at=data.expires_at,
-            usage_limit=data.usage_limit,
-            used_count=0,
-            is_active=data.is_active,
-            created_at=now,
-            updated_at=now,
-        )
+        norm_code = data.code.strip().upper()
         with self._lock:
+            if any(c.code.upper() == norm_code for c in self._coupons):
+                raise ConflictError("A coupon with this code already exists")
+            coupon = Coupon(
+                id=str(uuid4()),
+                code=norm_code,
+                description=data.description,
+                type=data.type,
+                value=data.value,
+                min_order_paise=data.min_order_paise,
+                max_discount_paise=data.max_discount_paise,
+                expires_at=data.expires_at,
+                usage_limit=data.usage_limit,
+                used_count=0,
+                is_active=data.is_active,
+                created_at=now,
+                updated_at=now,
+            )
             self._coupons.append(coupon.model_copy(deep=True))
-        return coupon
+            return coupon
 
     def update(self, coupon_id: str, data: UpdateCouponInput) -> Optional[Coupon]:
         with self._lock:
@@ -75,9 +79,15 @@ class InMemoryCouponRepository(CouponRepository):
                 if existing.id == coupon_id:
                     updated = existing.model_copy(deep=True)
                     patch = data.model_dump(exclude_unset=True)
+                    if "code" in patch and isinstance(patch["code"], str):
+                        norm_code = patch["code"].strip().upper()
+                        if any(
+                            c.code.upper() == norm_code and c.id != coupon_id
+                            for c in self._coupons
+                        ):
+                            raise ConflictError("A coupon with this code already exists")
+                        patch["code"] = norm_code
                     for k, val in patch.items():
-                        if k == "code" and isinstance(val, str):
-                            val = val.strip().upper()
                         setattr(updated, k, val)
                     updated.updated_at = _now_iso()
                     self._coupons[idx] = updated.model_copy(deep=True)

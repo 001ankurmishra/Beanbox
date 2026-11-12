@@ -8,12 +8,13 @@ import { GoogleSignInButton } from '@/components/auth/GoogleSignInButton';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
 import { ApiClientError } from '@/lib/api/client';
+import { sanitizeNextPath } from '@/lib/redirect';
 import { User } from '@/types/api';
 
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const nextPath = searchParams.get('next') || '/';
+  const nextPath = sanitizeNextPath(searchParams.get('next'));
   const oauthError = searchParams.get('error');
   const { login, verify2faLogin } = useAuth();
   const { showToast } = useToast();

@@ -24,6 +24,7 @@ import {
   UserRole,
   UserSession
 } from '@/types/api';
+import { sanitizeNextPath } from '@/lib/redirect';
 import { API_BASE_URL, apiFetch } from './client';
 
 export const authApi = {
@@ -115,7 +116,7 @@ export const authApi = {
       body: JSON.stringify({ code })
     }),
   googleStartUrl: (nextPath = '/') =>
-    `${API_BASE_URL}/auth/google/start?next=${encodeURIComponent(nextPath)}`
+    `${API_BASE_URL}/auth/google/start?next=${encodeURIComponent(sanitizeNextPath(nextPath))}`
 };
 
 export interface ProductQueryParams {

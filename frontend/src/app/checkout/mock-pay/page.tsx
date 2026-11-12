@@ -1,7 +1,7 @@
 'use client';
 
 import React, { Suspense, useEffect, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { notFound, useRouter, useSearchParams } from 'next/navigation';
 import { AlertTriangle, CheckCircle2, Clock, ShieldCheck } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import { ApiClientError } from '@/lib/api/client';
@@ -155,6 +155,12 @@ function MockPayContent() {
 }
 
 export default function MockPayPage() {
+  if (
+    process.env.NEXT_PUBLIC_APP_ENV === 'production' ||
+    process.env.NODE_ENV === 'production'
+  ) {
+    notFound();
+  }
   return (
     <Suspense
       fallback={

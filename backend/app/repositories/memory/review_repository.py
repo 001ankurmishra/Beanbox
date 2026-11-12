@@ -9,6 +9,7 @@ from app.repositories.interfaces import (
     ReviewRepository,
     ReviewStats,
 )
+from app.utils.errors import ConflictError
 
 
 def _now_iso() -> str:
@@ -80,21 +81,29 @@ class InMemoryReviewRepository(ReviewRepository):
 
     def create(self, data: CreateReviewInput) -> Review:
         now = _now_iso()
-        review = Review(
-            id=str(uuid4()),
-            product_id=data.product_id,
-            user_id=data.user_id,
-            user_name=data.user_name,
-            rating=data.rating,
-            title=data.title,
-            comment=data.comment,
-            verified_purchase=data.verified_purchase,
-            created_at=now,
-            updated_at=now,
-        )
         with self._lock:
+            if any(
+                r.user_id == data.user_id and r.product_id == data.product_id
+                for r in self._reviews
+            ):
+                raise ConflictError(
+                    "You have already reviewed this product",
+                    code="DUPLICATE_REVIEW",
+                )
+            review = Review(
+                id=str(uuid4()),
+                product_id=data.product_id,
+                user_id=data.user_id,
+                user_name=data.user_name,
+                rating=data.rating,
+                title=data.title,
+                comment=data.comment,
+                verified_purchase=data.verified_purchase,
+                created_at=now,
+                updated_at=now,
+            )
             self._reviews.append(review.model_copy(deep=True))
-        return review
+            return review
 
     def delete(self, review_id: str) -> bool:
         with self._lock:

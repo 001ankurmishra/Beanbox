@@ -59,7 +59,10 @@ def get_order(
     services: Services = Depends(get_services),
 ):
     order = services.order_service.get_order_for_user(
-        order_id, principal.id, principal.role == "admin"
+        order_id,
+        principal.id,
+        principal.is_effective_admin,
+        is_admin_role=principal.role == "admin",
     )
     return make_success_response({"order": order})
 
@@ -84,6 +87,9 @@ def get_invoice(
     services: Services = Depends(get_services),
 ):
     invoice = services.order_service.get_invoice(
-        order_id, principal.id, principal.role == "admin"
+        order_id,
+        principal.id,
+        principal.is_effective_admin,
+        is_admin_role=principal.role == "admin",
     )
     return make_success_response({"invoice": invoice})

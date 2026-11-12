@@ -73,6 +73,7 @@ class VariantInput(CamelModel):
     price_paise: int
     compare_at_paise: Optional[int] = None
     stock: int
+    is_active: bool = True
 
 
 class CreateProductInput(CamelModel):

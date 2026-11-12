@@ -1,13 +1,20 @@
 import json
+import os
 import re
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Iterator, Optional
+from urllib.parse import urlparse
 
+import psycopg
 import pyotp
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
+from app.repositories import create_supabase_repositories
+from app.seed.seed_supabase import seed_supabase_database
 from app.services.google_oauth_service import GoogleOAuthClient
 from app.services.payment_service import sign_mock_webhook_payload
 
@@ -132,3 +139,55 @@ def build_signed_webhook(secret: str, payload: dict[str, Any]) -> tuple[bytes, s
     raw = json.dumps(payload).encode("utf-8")
     sig = sign_mock_webhook_payload(raw, secret)
     return raw, sig
+
+
+def _assert_safe_local_test_dsn(dsn: str) -> None:
+    parsed = urlparse(dsn)
+    host = (parsed.hostname or "").lower()
+    if "supabase" in dsn.lower() or host not in {
+        "localhost",
+        "127.0.0.1",
+        "postgres",
+        "postgres_test",
+        "beanbox-postgres-test",
+    }:
+        raise RuntimeError(
+            f"Refusing to run destructive pg test reset on non-local database host '{host}'. "
+            "Set DATABASE_URL_TEST to a local Docker/CI Postgres instance."
+        )
+
+
+@pytest.fixture
+def pg_app() -> Iterator[FastAPI]:
+    """
+    Creates a FastAPI app backed by an isolated local Postgres database pointed to
+    by DATABASE_URL_TEST (never reading .env's live Supabase DATABASE_URL).
+    """
+    test_dsn = os.environ.get("DATABASE_URL_TEST", "").strip()
+    if not test_dsn:
+        pytest.skip("DATABASE_URL_TEST is not set; skipping local Postgres tests")
+
+    _assert_safe_local_test_dsn(test_dsn)
+
+    supabase_dir = Path(__file__).resolve().parents[1] / "supabase"
+    schema_sql = (supabase_dir / "schema.sql").read_text(encoding="utf-8")
+    migration_files = sorted((supabase_dir / "migrations").glob("*.sql"))
+
+    with psycopg.connect(test_dsn, autocommit=True) as conn:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;")
+        conn.execute(schema_sql)
+        for mig in migration_files:
+            conn.execute(mig.read_text(encoding="utf-8"))
+
+    seed_supabase_database(test_dsn, apply_schema=False)
+
+    repos, pool = create_supabase_repositories(test_dsn)
+    settings = make_test_settings(
+        REPOSITORY_BACKEND="supabase",
+        DATABASE_URL=test_dsn,
+    )
+    app = create_app(settings=settings, repos=repos)
+    try:
+        yield app
+    finally:
+        pool.close(timeout=2.0)

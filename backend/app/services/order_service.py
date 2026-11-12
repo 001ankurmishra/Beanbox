@@ -37,6 +37,7 @@ from app.services.pricing_service import (
 from app.utils.errors import (
     BadRequestError,
     ConflictError,
+    ForbiddenError,
     NotFoundError,
 )
 
@@ -322,11 +323,13 @@ class OrderService:
             return {"received": True, "duplicate": True}
 
         if event.type == "ignored":
-            self._payment_event_repo.record_event(
+            claimed_evt = self._payment_event_repo.claim_event(
                 event_id=event.event_id,
                 provider=event.provider,
                 event_type=event.type,
             )
+            if not claimed_evt:
+                return {"received": True, "duplicate": True}
             return {"received": True, "duplicate": False, "status": "ignored"}
 
         order = (
@@ -336,11 +339,13 @@ class OrderService:
             order = self._order_repo.find_by_payment_session_id(event.session_id)
 
         if not order:
-            self._payment_event_repo.record_event(
+            claimed_evt = self._payment_event_repo.claim_event(
                 event_id=event.event_id,
                 provider=event.provider,
                 event_type=event.type,
             )
+            if not claimed_evt:
+                return {"received": True, "duplicate": True}
             return {"received": True, "duplicate": False, "status": "order_not_found"}
 
         if event.type == "payment_succeeded":
@@ -357,63 +362,87 @@ class OrderService:
                     code="AMOUNT_MISMATCH",
                 )
 
-            if order.status == "pending":
-                updated = self._order_repo.update_order(
-                    order.id,
-                    OrderUpdateFields(
-                        status="paid",
-                        payment_status="paid",
-                        payment_intent_id=event.payment_intent_id
-                        or order.payment_intent_id,
-                        paid_at=_now_iso(),
-                    ),
+            updates = (
+                OrderUpdateFields(
+                    status="paid",
+                    payment_status="paid",
+                    payment_intent_id=event.payment_intent_id
+                    or order.payment_intent_id,
+                    paid_at=_now_iso(),
                 )
-                self._payment_event_repo.record_event(
-                    event_id=event.event_id,
-                    provider=event.provider,
-                    event_type=event.type,
-                    order_id=order.id,
-                )
+                if order.status == "pending"
+                else None
+            )
+            claimed_evt, updated = self._order_repo.apply_webhook_transition(
+                order_id=order.id,
+                expected_status="pending" if updates else None,
+                updates=updates,
+                event_id=event.event_id,
+                provider=event.provider,
+                event_type=event.type,
+                payment_event_repo=self._payment_event_repo,
+            )
+            if not claimed_evt:
+                return {"received": True, "duplicate": True}
+            if updated:
                 user = self._user_repo.find_by_id(order.user_id)
-                if user and updated:
+                if user:
                     self._email_service.send_order_confirmation(
                         to=user.email, customer_name=user.name, order=updated
                     )
                 return {"received": True, "duplicate": False, "status": "paid"}
 
-            self._payment_event_repo.record_event(
-                event_id=event.event_id,
-                provider=event.provider,
-                event_type=event.type,
-                order_id=order.id,
-            )
-            return {"received": True, "duplicate": False, "status": order.status}
+            latest = self._order_repo.find_by_id(order.id)
+            return {
+                "received": True,
+                "duplicate": False,
+                "status": latest.status if latest else order.status,
+            }
 
-        # payment_failed or session_expired -> release reserved stock & cancel pending order
-        if order.status == "pending":
-            self.release_order_resources(order)
-            self._order_repo.update_order(
-                order.id,
-                OrderUpdateFields(
-                    status="cancelled",
-                    payment_status="expired"
-                    if event.type == "session_expired"
-                    else "failed",
-                    stock_released=True,
-                    cancelled_at=_now_iso(),
-                    cancel_reason="Payment session expired"
-                    if event.type == "session_expired"
-                    else "Payment failed",
-                ),
+        # payment_failed or session_expired -> conditionally claim pending->cancelled + release stock once
+        fail_updates = (
+            OrderUpdateFields(
+                status="cancelled",
+                payment_status="expired"
+                if event.type == "session_expired"
+                else "failed",
+                stock_released=True,
+                cancelled_at=_now_iso(),
+                cancel_reason="Payment session expired"
+                if event.type == "session_expired"
+                else "Payment failed",
             )
-
-        self._payment_event_repo.record_event(
+            if order.status == "pending"
+            else None
+        )
+        claimed_evt, updated = self._order_repo.apply_webhook_transition(
+            order_id=order.id,
+            expected_status="pending" if fail_updates else None,
+            updates=fail_updates,
             event_id=event.event_id,
             provider=event.provider,
             event_type=event.type,
-            order_id=order.id,
+            payment_event_repo=self._payment_event_repo,
         )
+        if not claimed_evt:
+            return {"received": True, "duplicate": True}
+        if updated:
+            self._release_stock_and_coupon(updated)
         return {"received": True, "duplicate": False, "status": "cancelled"}
+
+    def _release_stock_and_coupon(self, order: Order) -> None:
+        self._product_repo.release_stock(
+            [
+                StockReservationItem(
+                    product_id=item.product_id,
+                    variant_id=item.variant_id,
+                    quantity=item.quantity,
+                )
+                for item in order.items
+            ]
+        )
+        if order.coupon_id:
+            self._coupon_repo.decrement_usage(order.coupon_id)
 
     def list_user_orders(self, user_id: str, page: int, limit: int) -> dict:
         items, total = self._order_repo.list_by_user_id(user_id, page, limit)
@@ -431,14 +460,26 @@ class OrderService:
         }
 
     def get_order_for_user(
-        self, order_id: str, user_id: str, is_admin: bool = False
+        self,
+        order_id: str,
+        user_id: str,
+        is_admin: bool = False,
+        *,
+        is_admin_role: bool = False,
     ) -> Order:
-        order = (
-            self._order_repo.find_by_id(order_id)
-            if is_admin
-            else self._order_repo.find_by_id_for_user(order_id, user_id)
-        )
-        if not order or (not is_admin and order.user_id != user_id):
+        if is_admin:
+            order = self._order_repo.find_by_id(order_id)
+            if not order:
+                raise NotFoundError("Order not found")
+            return order
+
+        order = self._order_repo.find_by_id_for_user(order_id, user_id)
+        if not order or order.user_id != user_id:
+            if is_admin_role:
+                raise ForbiddenError(
+                    "Two-factor authentication is required for administrator access. Please enable 2FA in Security Settings.",
+                    code="ADMIN_2FA_REQUIRED",
+                )
             raise NotFoundError("Order not found")
         return order
 
@@ -453,33 +494,44 @@ class OrderService:
                 code="ORDER_NOT_CANCELLABLE",
             )
 
-        self.release_order_resources(order)
-        next_payment_status = order.payment_status
-        if order.payment_status == "paid":
-            self._payment_provider.refund_payment(
-                order.payment_intent_id or "", order.pricing.total_paise
-            )
-            next_payment_status = "refunded"
-
-        updated = self._order_repo.update_order(
-            order.id,
-            OrderUpdateFields(
-                status="cancelled",
-                payment_status=next_payment_status,
-                stock_released=True,
-                cancelled_at=_now_iso(),
-                cancel_reason=(reason or "").strip()
-                or "Cancelled by customer before shipping",
-            ),
+        cancel_reason = (reason or "").strip() or "Cancelled by customer before shipping"
+        claimed = self._order_repo.claim_cancellation(
+            order_id=order.id,
+            user_id=user_id,
+            cancel_reason=cancel_reason,
+            cancelled_at=_now_iso(),
         )
-        if not updated:
-            raise NotFoundError("Order not found")
-        return updated
+        if not claimed:
+            raise ConflictError(
+                "Order has already been cancelled or updated",
+                code="ORDER_NOT_CANCELLABLE",
+            )
+
+        self._release_stock_and_coupon(claimed)
+        if claimed.payment_status == "paid":
+            self._payment_provider.refund_payment(
+                claimed.payment_intent_id or "", claimed.pricing.total_paise
+            )
+            refunded = self._order_repo.transition_status(
+                claimed.id,
+                expected_status="cancelled",
+                updates=OrderUpdateFields(payment_status="refunded"),
+            )
+            return refunded or claimed
+
+        return claimed
 
     def get_invoice(
-        self, order_id: str, user_id: str, is_admin: bool = False
+        self,
+        order_id: str,
+        user_id: str,
+        is_admin: bool = False,
+        *,
+        is_admin_role: bool = False,
     ) -> OrderInvoice:
-        order = self.get_order_for_user(order_id, user_id, is_admin)
+        order = self.get_order_for_user(
+            order_id, user_id, is_admin, is_admin_role=is_admin_role
+        )
         return OrderInvoice(
             invoice_number=f"INV-{order.order_number}",
             issued_at=order.paid_at or order.created_at,

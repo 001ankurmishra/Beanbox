@@ -50,18 +50,18 @@ Every API call flows through a consistent pipeline:
 ## 3. How Authentication Works (Signup -> Cookie -> Protected Routes -> Role Check)
 
 - **Signup (`POST /api/auth/signup`)**:
-  - Checks email uniqueness (`409 EMAIL_ALREADY_EXISTS`).
-  - Hashes password with `bcrypt.hashpw(..., bcrypt.gensalt(rounds=10))`.
-  - Creates a `customer` user (`role` is hardcoded server-side and never read from the client).
-  - Dispatches a welcome email via `ConsoleEmailService`.
+  - Checks email uniqueness (`409 EMAIL_ALREADY_EXISTS`; enforced atomically under `RLock` in memory and via Postgres `UniqueViolation` -> `ConflictError` mapping).
+  - Hashes password with **Argon2id** (`argon2-cffi`) after enforcing password policy (10+ chars, common password blocklist, email local-part check).
+  - Creates a `customer` user (`role` is hardcoded server-side and never read from the client) with `email_verified=False`.
+  - Dispatches welcome + 24h single-use verification emails via `ConsoleEmailService`.
   - If a `beanbox_guest_id` cookie is present, merges guest cart items into the new user's cart.
-- **JWT in `httpOnly` Cookie**:
-  - Signs `{ "sub": user.id, "role": user.role, "exp": ... }` using `PyJWT` (`HS256`, `JWT_SECRET`, 7-day expiry).
-  - Sets `beanbox_token` cookie with `httponly=True` (hidden from JS/XSS), `samesite="lax"`, `secure=(APP_ENV == "production")`.
-- **Protected Routes (`Depends(require_auth)`)**:
-  - Reads `beanbox_token` cookie (or `Authorization: Bearer <token>`), decodes & verifies JWT signature/expiry, and returns `AuthPrincipal(id, role)`. Invalid/missing tokens raise `401 UNAUTHORIZED`.
-- **Role Check (`Depends(require_admin)`)**:
-  - All `/api/admin/*` endpoints depend on `require_admin`, rejecting non-admin users with `403 FORBIDDEN`.
+- **Short-Lived JWT + Rotating Refresh Token Cookies**:
+  - Issues a 15-minute HS256 access JWT (`beanbox_access`, `HttpOnly`), a 30-day opaque refresh token (`beanbox_refresh`, `HttpOnly`, `Path=/api/auth`) with SHA-256 hash stored in `sessions`, and a double-submit `beanbox_csrf` cookie.
+  - Refresh tokens rotate on `/api/auth/refresh` with a 10-second grace window capped at `3` atomic uses (`sessions.grace_uses_remaining`) and full `family_id` revocation upon reuse.
+  - Auth cookies and `Authorization: Bearer` tokens never mix (`Bearer` ignores cookies; any auth cookie forces CSRF + `Origin` checks).
+- **Protected Routes (`Depends(require_auth)`) & Admin 2FA Gate (`Depends(require_admin)`)**:
+  - `require_auth` verifies the JWT, checks live session state (`revoked_at IS NULL`) and user record in DB, and sets `is_effective_admin = (role == "admin" and totp_enabled)`.
+  - All `/api/admin/*` endpoints depend on `require_admin`, which re-reads `role` and `totp_enabled` from the DB on every request (`403` for customers; `403 ADMIN_2FA_REQUIRED` for un-2FA admins). Cross-user admin access on `/api/orders/{id}`, `/invoice`, and `/reviews/{id}` also requires `is_effective_admin`.
 - **Forgot / Reset Password**:
   - Generates `secrets.token_hex(32)`, stores only its SHA-256 digest (`15 min` expiry) in `UserRepository`, logs the reset link via mock email, and marks the token consumed upon reset.
 
@@ -106,9 +106,12 @@ Gateway  -> POST /api/payments/webhook (raw bytes + signature header)
    - **Stripe mode** (`STRIPE_SECRET_KEY` set): verifies via `stripe.Webhook.construct_event(raw_body, signature, STRIPE_WEBHOOK_SECRET)`.
    - **Mock mode** (default when keys absent): verifies timing-safe HMAC-SHA256 (`x-mock-signature: v1=<hex>`) using `MOCK_WEBHOOK_SECRET`.
    - Invalid signatures raise `400 INVALID_SIGNATURE`.
-2. **Idempotency (`PaymentEventRepository`)**:
-   - Checks `has_processed_event(event.event_id)` before mutating anything.
-   - Replayed webhooks immediately return `200 { "received": true, "duplicate": true }`, preventing double status updates or duplicate confirmation emails.
+2. **Atomic Claim & Idempotency (`PaymentEventRepository` + `OrderRepository`)**:
+   - `OrderRepository.apply_webhook_transition` claims `event_id` FIRST via `INSERT INTO payment_events ... ON CONFLICT (event_id) DO NOTHING RETURNING id` in the **same transaction** as conditional order transition (`WHERE id = %s AND status = %s`).
+   - Replayed/concurrent duplicate webhooks immediately return `200 { "received": true, "duplicate": true }`, preventing double status transitions, double stock releases, or duplicate emails.
+   - Similarly, `OrderService.cancel_order` uses `OrderRepository.claim_cancellation` (`UPDATE orders SET status='cancelled', stock_released=true WHERE id=%s AND user_id=%s AND status IN ('pending','paid','processing') AND stock_released=false RETURNING *`) so concurrent cancels can only release stock/coupons/refunds once.
+3. **Production Payment Safety & Timeouts**:
+   - In `APP_ENV=production`, `PAYMENT_PROVIDER=stripe`, `STRIPE_SECRET_KEY`, and `STRIPE_WEBHOOK_SECRET` are mandatory at startup, and `/api/payments/mock/trigger` returns `404`. `StripeClient` enforces a `10s` HTTP timeout and maps `stripe.StripeError` to `502 PAYMENT_PROVIDER_ERROR`.
 3. **Outcomes**:
    - `checkout.session.completed` / `payment_intent.succeeded`: verifies amount matches `order.pricing.total_paise`, moves order `pending -> paid`, records the event, and sends order confirmation email.
    - `checkout.session.expired` / `payment_intent.payment_failed`: transitions order `pending -> cancelled`, atomically releases reserved stock and coupon usage, and records the event.
@@ -162,8 +165,8 @@ cancelled  cancelled / refunded
 ## 9. Error Handling & Security Layers
 
 - **Security Headers**: Every API response sets `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, and `Content-Security-Policy` (relaxed on `/api/docs` for Swagger UI).
-- **CORS**: `allow_origins=[FRONTEND_URL]` with `allow_credentials=True` for `httpOnly` cookie authentication.
-- **Rate Limiting**: Thread-safe sliding-window `InMemoryRateLimiter` (`240 req/min` general API; `25 req/15 min` on auth endpoints `/signup`, `/login`, `/forgot-password`, `/reset-password`).
+- **CORS**: `allow_origins=[FRONTEND_URL]` with `allow_credentials=True` and explicit `allow_methods` (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`) and `allow_headers` (`Authorization`, `Content-Type`, `X-CSRF-Token`, `X-Request-Id`, `X-Guest-Session-Id`).
+- **Rate Limiting**: Thread-safe sliding-window `InMemoryRateLimiter` (`240 req/min` general API; per-endpoint auth limits) using `TRUSTED_PROXY_COUNT` (default `0` = ignore `X-Forwarded-For`; `N > 0` takes the `N`th rightmost IP).
 - **Pydantic Validation & Pagination Caps**: Every query, path, and body input is validated; product pagination caps at `limit <= 48`, admin/order pagination at `limit <= 50`.
 - **Centralized Error Format**:
   ```json
@@ -242,20 +245,21 @@ Interactive OpenAPI/Swagger docs are served automatically by FastAPI at `/api/do
 Because every service and router depends strictly on ABC interfaces in `app/repositories/interfaces/`, connecting Supabase required **zero** edits to routers, schemas, or services:
 
 1. **Dependencies & Config**:
-   - `backend/pyproject.toml` & `backend/requirements.txt` — `psycopg[binary]` and `psycopg-pool`.
-   - `backend/.env` & `backend/app/config.py` — `REPOSITORY_BACKEND`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and `DATABASE_URL`.
-2. **Schema (`backend/supabase/schema.sql`)**:
-   - Creates 13 normalized tables (`users`, `password_reset_tokens`, `products`, `product_variants`, `carts`, `cart_items`, `coupons`, `addresses`, `orders`, `order_items`, `payment_events`, `reviews`, `wishlist_items`) with foreign-key indexes and RLS enabled on every table.
+   - `backend/pyproject.toml` & exact-pinned `backend/requirements.txt` — `psycopg[binary]` and `psycopg-pool`.
+   - `backend/.env` & `backend/app/config.py` — `REPOSITORY_BACKEND`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, and `TRUSTED_PROXY_COUNT`.
+2. **Schema & Migrations (`backend/supabase/schema.sql`, `migrations/002..004`)**:
+   - Normalized Postgres tables (`users`, `sessions`, `email_verification_tokens`, `oauth_accounts`, `totp_secrets`, `recovery_codes`, `consumed_challenges`, `login_attempts`, `audit_logs`, `password_reset_tokens`, `products`, `product_variants`, `carts`, `cart_items`, `coupons`, `addresses`, `orders`, `order_items`, `payment_events`, `reviews`, `wishlist_items`) with foreign-key indexes and RLS enabled on every table.
 3. **Supabase Repository Implementations (`backend/app/repositories/supabase/`)**:
-   - `db.py` (`ConnectionPool` with `prepare_threshold=None` for PgBouncer compatibility)
-   - `user_repository.py` (`SupabaseUserRepository`)
-   - `product_repository.py` (`SupabaseProductRepository` using deadlock-safe `ORDER BY pv.id FOR UPDATE` transactions for atomic `reserve_stock`)
+   - `db.py` (`ConnectionPool` with `timeout=10.0`, `connect_timeout=5`, `statement_timeout=10000`, `prepare_threshold=None` for PgBouncer compatibility, plus `map_pg_conflict` mapping `UniqueViolation`/`ForeignKeyViolation` to `409 ConflictError`)
+   - `user_repository.py` (`SupabaseUserRepository` with atomic `update_role_safe` preventing last-admin demotion via `FOR UPDATE`)
+   - `product_repository.py` (`SupabaseProductRepository` using deadlock-safe `ORDER BY pv.id FOR UPDATE` transactions for atomic `reserve_stock`, and variant diffing on `update` preserving ordered variants via `is_active = false, stock = 0`)
    - `cart_repository.py` (`SupabaseCartRepository`)
    - `coupon_repository.py` (`SupabaseCouponRepository` using atomic conditional `UPDATE ... WHERE used_count < usage_limit`)
    - `address_repository.py` (`SupabaseAddressRepository`)
-   - `order_repository.py` (`SupabaseOrderRepository`)
+   - `order_repository.py` (`SupabaseOrderRepository` with atomic `claim_cancellation` & `apply_webhook_transition`)
    - `review_repository.py` (`SupabaseReviewRepository`)
    - `wishlist_repository.py` (`SupabaseWishlistRepository`)
-   - `payment_event_repository.py` (`SupabasePaymentEventRepository`)
-4. **Composition Root (`backend/app/repositories/__init__.py` & `backend/app/main.py`)**:
-   - Automatically uses `create_supabase_repositories(settings.database_url)` when `DATABASE_URL` is configured (`APP_ENV != "test"`), while keeping unit tests fast and isolated on `InMemory*` repositories.
+   - `payment_event_repository.py` (`SupabasePaymentEventRepository` with atomic `claim_event`)
+   - `session_repository.py`, `oauth_repository.py`, `two_factor_repository.py`, `login_attempt_repository.py`, `audit_log_repository.py`
+4. **Composition Root & Local Postgres Testing (`docker-compose.test.yml`)**:
+   - Automatically uses `create_supabase_repositories(settings.database_url)` when `DATABASE_URL` is configured (`APP_ENV != "test"`), while keeping unit tests fast on `InMemory*` repositories and running real concurrency/parity tests (`pytest -m pg`) against `DATABASE_URL_TEST` (`docker-compose.test.yml`).

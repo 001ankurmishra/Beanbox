@@ -98,9 +98,33 @@ class InMemorySessionRepository(SessionRepository):
                         expected_hash if grace_expires_at is not None else None
                     )
                     updated.grace_expires_at = grace_expires_at
+                    updated.grace_uses_remaining = (
+                        3 if grace_expires_at is not None else 0
+                    )
                     updated.expires_at = new_expires_at
                     updated.ip = ip
                     updated.user_agent = user_agent
+                    updated.last_used_at = _now_iso()
+                    self._sessions[idx] = updated.model_copy(deep=True)
+                    return updated
+            return None
+
+    def consume_grace_refresh_token(
+        self, session_id: str, token_hash: str
+    ) -> Optional[Session]:
+        with self._lock:
+            for idx, s in enumerate(self._sessions):
+                if (
+                    s.id == session_id
+                    and s.grace_refresh_hash == token_hash
+                    and s.revoked_at is None
+                    and s.grace_expires_at is not None
+                    and not _is_expired(s.grace_expires_at)
+                    and not _is_expired(s.expires_at)
+                    and s.grace_uses_remaining > 0
+                ):
+                    updated = s.model_copy(deep=True)
+                    updated.grace_uses_remaining -= 1
                     updated.last_used_at = _now_iso()
                     self._sessions[idx] = updated.model_copy(deep=True)
                     return updated

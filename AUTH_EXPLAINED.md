@@ -40,13 +40,14 @@ Browser (Next.js)                  FastAPI (/api/auth)                  Postgres
 ```text
 Browser                            FastAPI (/api/auth/login)               DB (users/login_attempts)
        |-- POST /login { email, pw } ----->|                                   |
-       |                                   |-- Check lock: acct:<email> & ip ->|
+       |                                   |-- Check pair:<email>|<ip>,        |
+       |                                   |   acct:<email> (30), ip:<ip> ---->|
        |                                   |   (if locked -> dummy Argon2 + 429)|
        |                                   |-- Load user (if missing: run      |
        |                                   |   dummy Argon2id verify -> 401)   |
        |                                   |-- Verify pw (Argon2id or bcrypt)  |
-       |                                   |   If fail: +1 acct & ip counters  |
-       |                                   |   5 failures -> lock 15m (x2 next)|
+       |                                   |   If fail: +1 pair/ip (5) & acct(30)|
+       |                                   |   (failures >15m old reset count) |
        |                                   |   Return generic "Invalid creds"  |
        |                                   |                                   |
        |                                   |-- If legacy bcrypt matched:       |
@@ -158,14 +159,14 @@ Browser                                  FastAPI (/api/auth/2fa/verify-login)
 - **XSS Token Theft** → **Mitigated**: Access JWT (`beanbox_access`) and Refresh token (`beanbox_refresh`) are stored strictly in `HttpOnly` cookies (never `localStorage`), so injected JavaScript cannot read or exfiltrate session credentials. Also **Path scoping** (`Path=/api/auth`) keeps refresh tokens off every non-auth endpoint.
 - **CSRF (Cross-Site Request Forgery)** → **Blocked (2 layers)**:
   1. `SameSite=Lax` cookies stop third-party cross-site POST form submissions from carrying cookies.
-  2. Double-submit CSRF (`beanbox_csrf` cookie + `X-CSRF-Token` header verified via constant-time `secrets.compare_digest`) PLUS strict `Origin` / `Referer` allowlist verification on all cookie-authenticated mutations.
+  2. Double-submit CSRF (`beanbox_csrf` cookie + `X-CSRF-Token` header verified via constant-time `secrets.compare_digest`) PLUS strict `Origin` / `Referer` allowlist verification apply whenever **any** auth cookie (`beanbox_access` or `beanbox_refresh`) is present — even if a request also carries an `Authorization: Bearer` header. In `_extract_token`, `Authorization: Bearer` and cookies never mix (`Bearer` takes strict precedence when supplied).
 - **Token Theft & Replay** → **Contained & Auto-Revoked**:
   - Access JWTs expire in **15 minutes**.
-  - Refresh tokens are **256-bit opaque secrets**, stored ONLY as SHA-256 hashes in DB (`sessions`), rotated on every `/refresh`, and **reuse detection** revokes the entire `family_id` on replay.
-  - Step-2 TOTP codes enforce monotonic `last_used_timestep` (same 30s code cannot be replayed twice); challenge tokens, email verification tokens, password reset tokens, and recovery codes are all single-use.
+  - Refresh tokens are **256-bit opaque secrets**, stored ONLY as SHA-256 hashes in DB (`sessions`), rotated on every `/refresh`, and **reuse detection** revokes the entire `family_id` on replay. Concurrent tab refreshes within the `10s` grace window are atomically capped at **3 uses per rotation** (`sessions.grace_uses_remaining`); a 4th replay or post-window replay revokes the family.
+  - Step-2 TOTP codes are atomically consumed via `consume_totp_timestep` (`UPDATE totp_secrets ... WHERE last_used_timestep IS NULL OR last_used_timestep < step RETURNING`), and 2FA `challengeToken` `jti`s are atomically stored in Postgres `consumed_challenges` (`INSERT ... ON CONFLICT DO NOTHING RETURNING`) for cross-worker replay protection.
 - **Brute-Force & Credential Stuffing** → **Throttled + Locked**:
-  - Stricter per-IP sliding-window rate limits per endpoint (`login`, `signup`, `reset`, `verify-resend`, `refresh`, `2fa`).
-  - Persistent per-account + per-IP failure counters lock after 5 failures for 15 minutes with exponential doubling (`15m -> 30m -> 60m...`).
+  - Stricter per-IP sliding-window rate limits per endpoint (`login`, `signup`, `reset`, `verify-resend`, `refresh`, `2fa`), backed by `TRUSTED_PROXY_COUNT` (default `0` = ignore `X-Forwarded-For`; when `> 0`, extracts the `N`th IP from the right).
+  - Persistent `(email, ip)` (`pair:<email>|<ip>`) and per-IP (`ip:<ip>`) counters lock after 5 failures for 15 minutes with exponential doubling (`15m -> 30m -> 60m...`), preventing remote attackers from locking out victims on different IPs; a higher distributed per-email threshold (`acct:<email>`, 30 failures) locks for 15 minutes. Failures older than 15 minutes reset `failed_count`, and successful logins reset all counters.
   - Argon2id (`memory=64 MiB, time=3, parallelism=4`) resists GPU/ASIC cracking, with transparent bcrypt-to-Argon2id upgrade on login and weak/common/email-containing passwords rejected.
 - **Account Enumeration** → **Prevented**:
   - Login runs dummy Argon2id verification on missing/locked accounts for uniform timing and returns only `"Invalid credentials"`.
@@ -175,8 +176,9 @@ Browser                                  FastAPI (/api/auth/2fa/verify-login)
   - Every login mints a fresh `session.id`, `family_id`, `jti`, and rotates CSRF cookies.
   - Access JWTs carry `sid` checked against DB `sessions.revoked_at`, so device logout / password change / password reset invalidates access immediately.
   - `require_role("admin")` re-reads `role` and `totp_enabled` directly from Postgres instead of trusting stale JWT claims.
-- **Authorization Code Interception / OAuth CSRF** → **Blocked**:
-  - Google OAuth uses `PKCE (S256)`, AES-GCM sealed `httpOnly` transaction cookies (`beanbox_oauth_tx`), cryptographically random `state` + OIDC `nonce` verification, `email_verified=true` enforcement, and strict relative `next` URL sanitization (no open redirects).
+- **Authorization Code Interception, OAuth Pre-Hijack & Open Redirects** → **Blocked**:
+  - Google OAuth uses `PKCE (S256)`, AES-GCM sealed `httpOnly` transaction cookies (`beanbox_oauth_tx`), cryptographically random `state` + OIDC `nonce` verification, `email_verified=true` enforcement, and strict relative `next` URL sanitization (`sanitize_next_path` on backend + shared `sanitizeNextPath` in `frontend/src/lib/redirect.ts`).
+  - When verified Google OAuth links onto an **unverified** local account, BeanBox overwrites `password_hash = "!oauth-only"`, deletes unused email-verification and password-reset tokens, and revokes all active sessions (`revoke_all_for_user`), closing pre-hijack persistence.
 - **Secrets-at-Rest Protection** → **Enforced**:
   - TOTP secrets are encrypted with `AES-256-GCM` (`v1:...`) before storage; recovery codes, refresh tokens, reset tokens, and verification tokens store only cryptographic hashes; logs scrub query strings and sensitive metadata keys.
 

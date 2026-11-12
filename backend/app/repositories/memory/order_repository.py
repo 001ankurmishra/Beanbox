@@ -127,27 +127,94 @@ class InMemoryOrderRepository(OrderRepository):
         with self._lock:
             for o in self._orders:
                 if o.id == order_id:
-                    if updates.status is not None:
-                        o.status = updates.status
-                    if updates.payment_status is not None:
-                        o.payment_status = updates.payment_status
-                    if updates.payment_intent_id is not None:
-                        o.payment_intent_id = updates.payment_intent_id
-                    if updates.stock_released is not None:
-                        o.stock_released = updates.stock_released
-                    if updates.cancel_reason is not None:
-                        o.cancel_reason = updates.cancel_reason
-                    if updates.paid_at is not None:
-                        o.paid_at = updates.paid_at
-                    if updates.shipped_at is not None:
-                        o.shipped_at = updates.shipped_at
-                    if updates.delivered_at is not None:
-                        o.delivered_at = updates.delivered_at
-                    if updates.cancelled_at is not None:
-                        o.cancelled_at = updates.cancelled_at
+                    self._apply_updates(o, updates)
+                    return o.model_copy(deep=True)
+            return None
+
+    @staticmethod
+    def _apply_updates(o: Order, updates: OrderUpdateFields) -> None:
+        if updates.status is not None:
+            o.status = updates.status
+        if updates.payment_status is not None:
+            o.payment_status = updates.payment_status
+        if updates.payment_intent_id is not None:
+            o.payment_intent_id = updates.payment_intent_id
+        if updates.stock_released is not None:
+            o.stock_released = updates.stock_released
+        if updates.cancel_reason is not None:
+            o.cancel_reason = updates.cancel_reason
+        if updates.paid_at is not None:
+            o.paid_at = updates.paid_at
+        if updates.shipped_at is not None:
+            o.shipped_at = updates.shipped_at
+        if updates.delivered_at is not None:
+            o.delivered_at = updates.delivered_at
+        if updates.cancelled_at is not None:
+            o.cancelled_at = updates.cancelled_at
+        o.updated_at = _now_iso()
+
+    def transition_status(
+        self,
+        order_id: str,
+        expected_status: OrderStatus,
+        updates: OrderUpdateFields,
+    ) -> Optional[Order]:
+        with self._lock:
+            for o in self._orders:
+                if o.id == order_id and o.status == expected_status:
+                    self._apply_updates(o, updates)
+                    return o.model_copy(deep=True)
+            return None
+
+    def claim_cancellation(
+        self,
+        order_id: str,
+        user_id: str,
+        cancel_reason: str,
+        cancelled_at: str,
+    ) -> Optional[Order]:
+        with self._lock:
+            for o in self._orders:
+                if (
+                    o.id == order_id
+                    and o.user_id == user_id
+                    and o.status in ("pending", "paid", "processing")
+                    and not o.stock_released
+                ):
+                    o.status = "cancelled"
+                    o.stock_released = True
+                    o.cancel_reason = cancel_reason
+                    o.cancelled_at = cancelled_at
                     o.updated_at = _now_iso()
                     return o.model_copy(deep=True)
             return None
+
+    def apply_webhook_transition(
+        self,
+        order_id: str,
+        expected_status: Optional[OrderStatus],
+        updates: Optional[OrderUpdateFields],
+        event_id: str,
+        provider: Literal["stripe", "mock"],
+        event_type: str,
+        payment_event_repo: object,
+    ) -> tuple[bool, Optional[Order]]:
+        with self._lock:
+            claimed = payment_event_repo.claim_event(  # type: ignore[attr-defined]
+                event_id=event_id,
+                provider=provider,
+                event_type=event_type,
+                order_id=order_id,
+            )
+            if not claimed:
+                return False, None
+            if updates is None or expected_status is None:
+                return True, None
+            for o in self._orders:
+                if o.id == order_id and o.status == expected_status:
+                    self._apply_updates(o, updates)
+                    return True, o.model_copy(deep=True)
+            return True, None
 
     def has_verified_purchase(self, user_id: str, product_id: str) -> bool:
         with self._lock:

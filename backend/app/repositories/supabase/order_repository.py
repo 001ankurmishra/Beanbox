@@ -251,9 +251,8 @@ class SupabaseOrderRepository(OrderRepository):
             items = self._fetch_items_map(conn, [order_id]).get(order_id, [])
             return _row_to_order(row, items)
 
-    def update_order(
-        self, order_id: str, updates: OrderUpdateFields
-    ) -> Optional[Order]:
+    @staticmethod
+    def _build_update_parts(updates: OrderUpdateFields) -> tuple[list[str], list[Any]]:
         sets: list[str] = []
         params: list[Any] = []
         for field_name in (
@@ -271,7 +270,12 @@ class SupabaseOrderRepository(OrderRepository):
             if val is not None:
                 sets.append(f"{field_name} = %s")
                 params.append(val)
+        return sets, params
 
+    def update_order(
+        self, order_id: str, updates: OrderUpdateFields
+    ) -> Optional[Order]:
+        sets, params = self._build_update_parts(updates)
         if not sets:
             return self.find_by_id(order_id)
 
@@ -286,6 +290,96 @@ class SupabaseOrderRepository(OrderRepository):
                 return None
             items = self._fetch_items_map(conn, [order_id]).get(order_id, [])
             return _row_to_order(row, items)
+
+    def transition_status(
+        self,
+        order_id: str,
+        expected_status: OrderStatus,
+        updates: OrderUpdateFields,
+    ) -> Optional[Order]:
+        sets, params = self._build_update_parts(updates)
+        if not sets:
+            return self.find_by_id(order_id)
+
+        sets.append("updated_at = now()")
+        params.extend([order_id, expected_status])
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                f"UPDATE orders SET {', '.join(sets)} WHERE id = %s AND status = %s RETURNING *;",
+                tuple(params),
+            ).fetchone()
+            if not row:
+                return None
+            items = self._fetch_items_map(conn, [order_id]).get(order_id, [])
+            return _row_to_order(row, items)
+
+    def claim_cancellation(
+        self,
+        order_id: str,
+        user_id: str,
+        cancel_reason: str,
+        cancelled_at: str,
+    ) -> Optional[Order]:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE orders
+                SET status = 'cancelled',
+                    stock_released = true,
+                    cancel_reason = %s,
+                    cancelled_at = %s,
+                    updated_at = now()
+                WHERE id = %s
+                  AND user_id = %s
+                  AND status IN ('pending', 'paid', 'processing')
+                  AND stock_released = false
+                RETURNING *;
+                """,
+                (cancel_reason, cancelled_at, order_id, user_id),
+            ).fetchone()
+            if not row:
+                return None
+            items = self._fetch_items_map(conn, [order_id]).get(order_id, [])
+            return _row_to_order(row, items)
+
+    def apply_webhook_transition(
+        self,
+        order_id: str,
+        expected_status: Optional[OrderStatus],
+        updates: Optional[OrderUpdateFields],
+        event_id: str,
+        provider: Literal["stripe", "mock"],
+        event_type: str,
+        payment_event_repo: object,
+    ) -> tuple[bool, Optional[Order]]:
+        with self._pool.connection() as conn:
+            with conn.transaction():
+                claimed_row = conn.execute(
+                    """
+                    INSERT INTO payment_events (event_id, provider, event_type, order_id)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (event_id) DO NOTHING
+                    RETURNING id;
+                    """,
+                    (event_id, provider, event_type, order_id),
+                ).fetchone()
+                if not claimed_row:
+                    return False, None
+                if updates is None or expected_status is None:
+                    return True, None
+                sets, params = self._build_update_parts(updates)
+                if not sets:
+                    return True, None
+                sets.append("updated_at = now()")
+                params.extend([order_id, expected_status])
+                row = conn.execute(
+                    f"UPDATE orders SET {', '.join(sets)} WHERE id = %s AND status = %s RETURNING *;",
+                    tuple(params),
+                ).fetchone()
+                if not row:
+                    return True, None
+                items = self._fetch_items_map(conn, [order_id]).get(order_id, [])
+                return True, _row_to_order(row, items)
 
     def has_verified_purchase(self, user_id: str, product_id: str) -> bool:
         with self._pool.connection() as conn:

@@ -29,6 +29,7 @@ class InMemoryLoginAttemptRepository(LoginAttemptRepository):
         key_type: LoginAttemptKeyType,
         max_failures: int = 5,
         base_lock_minutes: int = 15,
+        failure_window_minutes: int = 15,
     ) -> LoginAttemptRecord:
         now = datetime.now(timezone.utc)
         now_iso = _iso(now)
@@ -57,7 +58,15 @@ class InMemoryLoginAttemptRepository(LoginAttemptRepository):
                 return rec
 
             rec = existing.model_copy(deep=True)
-            rec.failed_count += 1
+            last_dt = datetime.fromisoformat(rec.last_failed_at.replace("Z", "+00:00"))
+            window_expired = (now - last_dt) > timedelta(minutes=failure_window_minutes)
+            if window_expired:
+                rec.failed_count = 1
+                rec.lockout_level = 0
+                rec.first_failed_at = now_iso
+                rec.locked_until = None
+            else:
+                rec.failed_count += 1
             rec.last_failed_at = now_iso
 
             currently_locked = False

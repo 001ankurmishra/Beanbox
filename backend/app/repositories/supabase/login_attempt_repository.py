@@ -41,6 +41,7 @@ class SupabaseLoginAttemptRepository(LoginAttemptRepository):
         key_type: LoginAttemptKeyType,
         max_failures: int = 5,
         base_lock_minutes: int = 15,
+        failure_window_minutes: int = 15,
     ) -> LoginAttemptRecord:
         now = datetime.now(timezone.utc)
         with self._pool.connection() as conn:
@@ -71,17 +72,35 @@ class SupabaseLoginAttemptRepository(LoginAttemptRepository):
                     assert inserted is not None
                     return _row_to_record(inserted)
 
-                failed_count = int(row["failed_count"]) + 1
-                lockout_level = int(row["lockout_level"])
-                existing_lock = row.get("locked_until")
-                currently_locked = False
-                if existing_lock is not None:
-                    lock_dt = (
-                        existing_lock
-                        if existing_lock.tzinfo
-                        else existing_lock.replace(tzinfo=timezone.utc)
-                    )
-                    currently_locked = lock_dt > now
+                last_failed_raw = row["last_failed_at"]
+                last_failed_dt = (
+                    last_failed_raw
+                    if last_failed_raw.tzinfo
+                    else last_failed_raw.replace(tzinfo=timezone.utc)
+                )
+                window_expired = (now - last_failed_dt) > timedelta(
+                    minutes=failure_window_minutes
+                )
+
+                if window_expired:
+                    failed_count = 1
+                    lockout_level = 0
+                    first_failed_at = now
+                    existing_lock = None
+                    currently_locked = False
+                else:
+                    failed_count = int(row["failed_count"]) + 1
+                    lockout_level = int(row["lockout_level"])
+                    first_failed_at = row["first_failed_at"]
+                    existing_lock = row.get("locked_until")
+                    currently_locked = False
+                    if existing_lock is not None:
+                        lock_dt = (
+                            existing_lock
+                            if existing_lock.tzinfo
+                            else existing_lock.replace(tzinfo=timezone.utc)
+                        )
+                        currently_locked = lock_dt > now
 
                 next_locked_until = existing_lock
                 if not currently_locked and failed_count >= max_failures:
@@ -94,12 +113,13 @@ class SupabaseLoginAttemptRepository(LoginAttemptRepository):
                     UPDATE login_attempts
                     SET failed_count = %s,
                         lockout_level = %s,
+                        first_failed_at = %s,
                         last_failed_at = %s,
                         locked_until = %s
                     WHERE key = %s
                     RETURNING *;
                     """,
-                    (failed_count, lockout_level, now, next_locked_until, key),
+                    (failed_count, lockout_level, first_failed_at, now, next_locked_until, key),
                 ).fetchone()
                 assert updated is not None
                 return _row_to_record(updated)

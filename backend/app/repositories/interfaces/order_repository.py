@@ -98,6 +98,35 @@ class OrderRepository(ABC):
     ) -> Optional[Order]: ...
 
     @abstractmethod
+    def transition_status(
+        self,
+        order_id: str,
+        expected_status: OrderStatus,
+        updates: OrderUpdateFields,
+    ) -> Optional[Order]: ...
+
+    @abstractmethod
+    def claim_cancellation(
+        self,
+        order_id: str,
+        user_id: str,
+        cancel_reason: str,
+        cancelled_at: str,
+    ) -> Optional[Order]: ...
+
+    @abstractmethod
+    def apply_webhook_transition(
+        self,
+        order_id: str,
+        expected_status: Optional[OrderStatus],
+        updates: Optional[OrderUpdateFields],
+        event_id: str,
+        provider: Literal["stripe", "mock"],
+        event_type: str,
+        payment_event_repo: object,
+    ) -> tuple[bool, Optional[Order]]: ...
+
+    @abstractmethod
     def has_verified_purchase(self, user_id: str, product_id: str) -> bool: ...
 
     @abstractmethod

@@ -31,6 +31,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+  "pg: tests requiring an isolated local Postgres instance via DATABASE_URL_TEST (never production Supabase)",
+]
 
 [tool.ruff]
 line-length = 100

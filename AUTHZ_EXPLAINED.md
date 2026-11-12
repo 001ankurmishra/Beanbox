@@ -9,12 +9,12 @@
 BeanBox enforces defense-in-depth authorization across four layers:
 
 1. **HTTP Security & CSRF Middleware** (`backend/app/middleware/security.py`)
-   - Validates `Origin` / `Referer` and double-submit `X-CSRF-Token` vs `beanbox_csrf` on all cookie-authenticated unsafe requests (`POST`, `PATCH`, `PUT`, `DELETE`), exempting only signed payment webhooks (`/api/payments/webhook`), login, signup, and pre-auth password reset endpoints.
+   - Validates `Origin` / `Referer` and double-submit `X-CSRF-Token` vs `beanbox_csrf` on all unsafe requests (`POST`, `PATCH`, `PUT`, `DELETE`) whenever any auth cookie (`beanbox_access` or `beanbox_refresh`) is present — regardless of any `Authorization: Bearer` header. Auth token extraction (`_extract_token`) never mixes cookie and Bearer credentials (`Bearer` takes strict precedence). Rate limits and lockouts derive client IP from `TRUSTED_PROXY_COUNT` (default `0`, ignoring `X-Forwarded-For`; when `> 0`, takes the `N`th entry from the right).
 2. **Router Auth & Role Dependencies** (`backend/app/dependencies.py`)
    - `get_optional_user`: returns `AuthPrincipal | None` for anonymous-capable cart endpoints.
-   - `require_user` (aliased `require_auth`): verifies HS256 JWT (`typ="access"`), checks that the backing session in `sessions` exists, belongs to `claims.user_id`, is not revoked (`revoked_at IS NULL`), and is not expired, then loads the user from `users`.
+   - `require_user` (aliased `require_auth`): verifies HS256 JWT (`typ="access"`), checks that the backing session in `sessions` exists, belongs to `claims.user_id`, is not revoked (`revoked_at IS NULL`), and is not expired, loads the user from `users`, and computes `is_effective_admin = (user.role == "admin" and user.totp_enabled)`.
    - `require_verified`: composes `require_user` and rejects unverified emails with `403 EMAIL_NOT_VERIFIED`.
-   - `require_admin` (`require_role("admin")`): composes `require_user`, **always re-queries `users` from the repository** (never trusting JWT `role` claims alone), rejects non-admins with `403`, and enforces `totp_enabled == True` (`403 ADMIN_2FA_REQUIRED`) for every `/api/admin/*` call.
+   - `require_admin` (`require_role("admin")`): composes `require_user`, **always re-queries `users` from the repository** (never trusting JWT `role` claims alone), rejects non-admins with `403`, and enforces `totp_enabled == True` (`403 ADMIN_2FA_REQUIRED`) for every `/api/admin/*` call and every cross-user admin override (`orders/{id}`, `orders/{id}/invoice`, `reviews/{id}`).
 3. **Service & Repository Ownership Scoping** (`backend/app/services/*`, `backend/app/repositories/*`)
    - User-owned lookups and mutations query by **both resource ID and caller `user_id`** directly in the repository layer (`find_by_id_for_user`, `delete_for_user`, `revoke_by_id`, `remove`), and services treat any missing or cross-user match uniformly as **`404 NotFoundError`**.
 4. **PostgreSQL Row-Level Security (RLS)** (`backend/supabase/schema.sql`, `002_production_auth.sql`)
@@ -83,13 +83,16 @@ Returning `403 Forbidden` when another user's resource exists vs. `404 Not Found
 
 - **Mass Assignment Protection**: All request schemas inherit `CamelModel` (`extra="ignore"` by default in Pydantic v2) with explicit field allowlists (`SignupRequest`, `UpdateProfileRequest`, `CreateAddressRequest`, `CreateOrderRequest`, `CreateReviewRequest`, `AddToCartRequest`). Services construct explicit repository input dataclasses and overwrite `user_id`, `role`, `status`, `payment_status`, `pricing`, and `verified_purchase` server-side.
 - **No Email-Change Endpoint**: `UpdateProfileRequest` exposes only `name` and `phone`. Account email addresses are immutable post-signup (verified against `email_verification_tokens` or verified Google OAuth `id_token` claims).
-- **Demoted Admin Immediate Rejection**:
-  1. `AdminService.update_user_role` atomically calls `session_repo.revoke_all_for_user(target_user_id)` upon any role change, immediately invalidating existing access JWTs and refresh tokens (`401 SESSION_REVOKED`).
-  2. Even if an access JWT still has a `"role": "admin"` claim before expiry, `require_role("admin")` in `dependencies.py` re-reads `db_user = users.find_by_id(principal.id)` on every request and rejects with `403`.
-- **10-Second Refresh Token Grace Window (`REFRESH_GRACE_SECONDS=10`)**:
-  - When a refresh token `R0` rotates to `R1`, `sessions.grace_refresh_hash` records `hash(R0)` with `grace_expires_at = now + 10s` (`003_refresh_grace.sql`).
-  - If a second concurrent browser tab submits `R0` within 10 seconds (sequentially or in a parallel CAS race inside `rotate_refresh_token`), `AuthService.refresh_session` issues a fresh access JWT (`refresh_grace_hit` audit event) without invalidating `R1` or revoking the family.
-  - Only the **immediately previous** token gets the grace window: once `R1 -> R2` happens (`grace_refresh_hash` becomes `hash(R1)`), replaying `R0` immediately revokes the family (`401 REFRESH_TOKEN_REUSE_DETECTED`), and replaying `R0` after the 10-second `grace_expires_at` passes also revokes the family.
+- **Demoted Admin & Last-Admin Protection**:
+  1. `AdminService.update_user_role` calls `UserRepository.update_role_safe`, which locks `WHERE role = 'admin' FOR UPDATE` inside a Postgres transaction (or `RLock` in memory) so concurrent or single attempts to demote the last remaining administrator fail with `409 LAST_ADMIN_CANNOT_BE_DEMOTED`.
+  2. Upon any role change, `session_repo.revoke_all_for_user(target_user_id)` immediately invalidates existing access JWTs and refresh tokens (`401 SESSION_REVOKED`).
+  3. Even if an access JWT still has a `"role": "admin"` claim before expiry, `require_role("admin")` in `dependencies.py` re-reads `db_user = users.find_by_id(principal.id)` on every request and rejects with `403`. Non-2FA admins attempting cross-user read/delete on orders, invoices, or reviews also receive `403 ADMIN_2FA_REQUIRED`.
+- **10-Second Bounded Refresh Token Grace Window (`REFRESH_GRACE_SECONDS=10`)**:
+  - When a refresh token `R0` rotates to `R1`, `sessions.grace_refresh_hash` records `hash(R0)` with `grace_expires_at = now + 10s` and resets `grace_uses_remaining = 3` (`003_refresh_grace.sql`, `004_security_hardening.sql`).
+  - Concurrent browser tabs submitting `R0` within 10 seconds atomically decrement `grace_uses_remaining` via `SessionRepository.consume_grace_refresh_token` (`WHERE grace_uses_remaining > 0`) and receive a fresh access JWT (`refresh_grace_hit`) without invalidating `R1`, capped at **3 uses per rotation**.
+  - On the 4th replay inside the window, after `grace_expires_at` passes, or once `R1 -> R2` overwrites `grace_refresh_hash`, replaying `R0` revokes the entire session family (`401 REFRESH_TOKEN_REUSE_DETECTED`).
+- **Production Mock Payment Hard-Disable**:
+  - `create_payment_provider` refuses to start if `APP_ENV=production` without `PAYMENT_PROVIDER=stripe`, `STRIPE_SECRET_KEY`, and `STRIPE_WEBHOOK_SECRET`. Both `POST /api/payments/mock/trigger` and `/checkout/mock-pay` return `404` in production.
 - **Security Notification Emails** (`EmailService` / `ConsoleEmailService`):
   - Sent (`type="security_notification"`) with request IP & `User-Agent` (never logging tokens or passwords) on:
     - Password changed (`change_password` and `reset_password`)
@@ -117,7 +120,7 @@ Returning `403 Forbidden` when another user's resource exists vs. `404 Not Found
 | `POST` | `/api/auth/2fa/recovery-codes/regenerate` | `require_user` | Verifies TOTP code, replaces recovery codes for `principal.id` | `401` bad code |
 | `POST` | `/api/auth/2fa/disable` | `require_user` | Verifies TOTP/recovery + password; blocks admins; sends alert email | `403 ADMIN_2FA_REQUIRED` for admin |
 | `POST` | `/api/products/{slug}/reviews` | `require_auth` | `OrderRepository.has_verified_purchase(principal.id, product.id)` | `403 VERIFIED_PURCHASE_REQUIRED` |
-| `DELETE` | `/api/reviews/{review_id}` | `require_auth` | `ReviewRepository.find_by_id_for_user` + `delete_for_user` (or any if `admin`) | **`404`** for non-admin on others' review |
+| `DELETE` | `/api/reviews/{review_id}` | `require_auth` | `ReviewRepository.find_by_id_for_user` + `delete_for_user` (cross-user requires `is_effective_admin`) | **`404`** non-admin; `403 ADMIN_2FA_REQUIRED` un-2FA admin |
 | `GET` | `/api/cart` | `get_optional_user` | Scoped to `CartOwner(user_id=principal.id)` or guest `beanbox_guest_id` cookie | Separate carts per owner |
 | `POST` | `/api/cart/items` | `get_optional_user` | Adds catalog variant to caller's `CartOwner` cart with server pricing | `404` invalid variant / `409` stock |
 | `PATCH` | `/api/cart/items/{variant_id}` | `get_optional_user` | Updates item only inside caller's `CartOwner` cart | **`404`** if not in caller's cart |
@@ -134,9 +137,9 @@ Returning `403 Forbidden` when another user's resource exists vs. `404 Not Found
 | `POST` | `/api/checkout/preview` | `require_auth` | Optional `addressId` checked via `AddressRepository.find_by_id_for_user(..., principal.id)` | **`404`** for another user's address |
 | `POST` | `/api/orders` | `require_verified` | Requires verified email; `addressId` via `AddressRepository.find_by_id_for_user` | `403 EMAIL_NOT_VERIFIED`; **`404`** others' address |
 | `GET` | `/api/orders` | `require_auth` | `OrderRepository.list_by_user_id(principal.id, ...)` | `401` |
-| `GET` | `/api/orders/{order_id}` | `require_auth` | `OrderRepository.find_by_id_for_user(order_id, principal.id)` (or any if `admin`) | **`404`** for non-admin on others' order |
-| `POST` | `/api/orders/{order_id}/cancel` | `require_auth` | `get_order_for_user(..., is_admin=False)` -> `find_by_id_for_user(order_id, principal.id)` | **`404`** for another user's order |
-| `GET` | `/api/orders/{order_id}/invoice` | `require_auth` | `get_order_for_user(..., is_admin=(role=="admin"))` -> `find_by_id_for_user` | **`404`** for non-admin on others' invoice |
+| `GET` | `/api/orders/{order_id}` | `require_auth` | `OrderRepository.find_by_id_for_user(order_id, principal.id)` (cross-user requires `is_effective_admin`) | **`404`** non-admin; `403 ADMIN_2FA_REQUIRED` un-2FA admin |
+| `POST` | `/api/orders/{order_id}/cancel` | `require_auth` | `get_order_for_user(..., is_admin=False)` -> atomic `claim_cancellation` | **`404`** others' order; **`409`** already cancelled |
+| `GET` | `/api/orders/{order_id}/invoice` | `require_auth` | `get_order_for_user(..., is_effective_admin)` | **`404`** non-admin; `403 ADMIN_2FA_REQUIRED` un-2FA admin |
 | `POST` | `/api/payments/checkout-session` | `require_verified` | `OrderRepository.find_by_id_for_user(order_id, principal.id)` | `403 EMAIL_NOT_VERIFIED`; **`404`** others' order |
 | `POST` | `/api/payments/mock/trigger` | `require_auth` | `get_order_for_user(order_id, principal.id, is_admin=False)` (plus mock-mode check) | **`404`** for another user's order |
 

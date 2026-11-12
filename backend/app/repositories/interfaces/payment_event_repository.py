@@ -9,6 +9,15 @@ class PaymentEventRepository(ABC):
     def has_processed_event(self, event_id: str) -> bool: ...
 
     @abstractmethod
+    def claim_event(
+        self,
+        event_id: str,
+        provider: Literal["stripe", "mock"],
+        event_type: str,
+        order_id: Optional[str] = None,
+    ) -> bool: ...
+
+    @abstractmethod
     def record_event(
         self,
         event_id: str,

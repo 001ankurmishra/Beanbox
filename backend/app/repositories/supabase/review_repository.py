@@ -10,7 +10,7 @@ from app.repositories.interfaces import (
     ReviewRepository,
     ReviewStats,
 )
-from app.repositories.supabase.db import iso_str
+from app.repositories.supabase.db import iso_str, map_pg_conflict
 
 
 def _row_to_review(row: dict[str, Any]) -> Review:
@@ -101,24 +101,32 @@ class SupabaseReviewRepository(ReviewRepository):
 
     def create(self, data: CreateReviewInput) -> Review:
         with self._pool.connection() as conn:
-            row = conn.execute(
-                """
-                INSERT INTO reviews (
-                  product_id, user_id, user_name, rating, title, comment, verified_purchase
+            try:
+                row = conn.execute(
+                    """
+                    INSERT INTO reviews (
+                      product_id, user_id, user_name, rating, title, comment, verified_purchase
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING *;
+                    """,
+                    (
+                        data.product_id,
+                        data.user_id,
+                        data.user_name,
+                        data.rating,
+                        data.title,
+                        data.comment,
+                        data.verified_purchase,
+                    ),
+                ).fetchone()
+            except Exception as exc:
+                map_pg_conflict(
+                    exc,
+                    unique_message="You have already reviewed this product",
+                    unique_code="DUPLICATE_REVIEW",
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                RETURNING *;
-                """,
-                (
-                    data.product_id,
-                    data.user_id,
-                    data.user_name,
-                    data.rating,
-                    data.title,
-                    data.comment,
-                    data.verified_purchase,
-                ),
-            ).fetchone()
+                raise
             assert row is not None
             return _row_to_review(row)
 

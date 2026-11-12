@@ -19,7 +19,7 @@ from app.repositories.interfaces import (
     StockReservationResult,
     UpdateProductInput,
 )
-from app.repositories.supabase.db import iso_str
+from app.repositories.supabase.db import iso_str, map_pg_conflict
 
 
 def _row_to_variant(row: dict[str, Any]) -> ProductVariant:
@@ -36,6 +36,7 @@ def _row_to_variant(row: dict[str, Any]) -> ProductVariant:
             else None
         ),
         stock=int(row["stock"]),
+        is_active=bool(row.get("is_active", True)),
     )
 
 
@@ -76,6 +77,7 @@ class SupabaseProductRepository(ProductRepository):
             """
             SELECT * FROM product_variants
             WHERE product_id = ANY(%s)
+              AND is_active = true
             ORDER BY price_paise ASC, id ASC;
             """,
             (product_ids,),
@@ -110,25 +112,25 @@ class SupabaseProductRepository(ProductRepository):
             where_clauses.append("p.is_featured = true")
         if query.in_stock_only:
             where_clauses.append(
-                "EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.stock > 0)"
+                "EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.is_active = true AND pv.stock > 0)"
             )
         if query.min_price_paise is not None:
             where_clauses.append(
-                "EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.price_paise >= %s)"
+                "EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.is_active = true AND pv.price_paise >= %s)"
             )
             params.append(query.min_price_paise)
         if query.max_price_paise is not None:
             where_clauses.append(
-                "EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.price_paise <= %s)"
+                "EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.is_active = true AND pv.price_paise <= %s)"
             )
             params.append(query.max_price_paise)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
         if query.sort == "price_asc":
-            order_sql = "ORDER BY COALESCE((SELECT MIN(pv.price_paise) FROM product_variants pv WHERE pv.product_id = p.id), 0) ASC"
+            order_sql = "ORDER BY COALESCE((SELECT MIN(pv.price_paise) FROM product_variants pv WHERE pv.product_id = p.id AND pv.is_active = true), 0) ASC"
         elif query.sort == "price_desc":
-            order_sql = "ORDER BY COALESCE((SELECT MIN(pv.price_paise) FROM product_variants pv WHERE pv.product_id = p.id), 0) DESC"
+            order_sql = "ORDER BY COALESCE((SELECT MIN(pv.price_paise) FROM product_variants pv WHERE pv.product_id = p.id AND pv.is_active = true), 0) DESC"
         elif query.sort == "rating_desc":
             order_sql = "ORDER BY p.rating_average DESC, p.rating_count DESC"
         elif query.sort == "newest":
@@ -245,100 +247,45 @@ class SupabaseProductRepository(ProductRepository):
     def create(self, data: CreateProductInput) -> Product:
         product_id = str(uuid4())
         with self._pool.connection() as conn:
-            with conn.transaction():
-                row = conn.execute(
-                    """
-                    INSERT INTO products (
-                      id, name, slug, short_description, description, category,
-                      roast_level, origin, tasting_notes, images, is_featured, is_active
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING *;
-                    """,
-                    (
-                        product_id,
-                        data.name,
-                        data.slug,
-                        data.short_description,
-                        data.description,
-                        data.category,
-                        data.roast_level,
-                        data.origin,
-                        data.tasting_notes,
-                        data.images,
-                        data.is_featured,
-                        data.is_active,
-                    ),
-                ).fetchone()
-                variants: list[ProductVariant] = []
-                for v in data.variants:
-                    v_id = v.id or str(uuid4())
-                    v_row = conn.execute(
+            try:
+                with conn.transaction():
+                    row = conn.execute(
                         """
-                        INSERT INTO product_variants (
-                          id, product_id, sku, size, grind, label, price_paise, compare_at_paise, stock
+                        INSERT INTO products (
+                          id, name, slug, short_description, description, category,
+                          roast_level, origin, tasting_notes, images, is_featured, is_active
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING *;
                         """,
                         (
-                            v_id,
                             product_id,
-                            v.sku,
-                            v.size,
-                            v.grind,
-                            v.label,
-                            v.price_paise,
-                            v.compare_at_paise,
-                            v.stock,
+                            data.name,
+                            data.slug,
+                            data.short_description,
+                            data.description,
+                            data.category,
+                            data.roast_level,
+                            data.origin,
+                            data.tasting_notes,
+                            data.images,
+                            data.is_featured,
+                            data.is_active,
                         ),
                     ).fetchone()
-                    if v_row:
-                        variants.append(_row_to_variant(v_row))
-                assert row is not None
-                return _row_to_product(row, variants)
-
-    def update(self, product_id: str, data: UpdateProductInput) -> Optional[Product]:
-        patch = data.model_dump(exclude_unset=True)
-        variants_data = patch.pop("variants", None)
-
-        with self._pool.connection() as conn:
-            with conn.transaction():
-                existing = conn.execute(
-                    "SELECT * FROM products WHERE id = %s;", (product_id,)
-                ).fetchone()
-                if not existing:
-                    return None
-
-                if patch:
-                    sets = [f"{k} = %s" for k in patch.keys()]
-                    sets.append("updated_at = now()")
-                    params = [*patch.values(), product_id]
-                    row = conn.execute(
-                        f"UPDATE products SET {', '.join(sets)} WHERE id = %s RETURNING *;",
-                        tuple(params),
-                    ).fetchone()
-                else:
-                    row = conn.execute(
-                        "UPDATE products SET updated_at = now() WHERE id = %s RETURNING *;",
-                        (product_id,),
-                    ).fetchone()
-
-                if variants_data is not None and data.variants is not None:
-                    conn.execute(
-                        "DELETE FROM product_variants WHERE product_id = %s;",
-                        (product_id,),
-                    )
+                    variants: list[ProductVariant] = []
                     for v in data.variants:
-                        conn.execute(
+                        v_id = v.id or str(uuid4())
+                        v_row = conn.execute(
                             """
                             INSERT INTO product_variants (
-                              id, product_id, sku, size, grind, label, price_paise, compare_at_paise, stock
+                              id, product_id, sku, size, grind, label, price_paise, compare_at_paise, stock, is_active
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            RETURNING *;
                             """,
                             (
-                                v.id or str(uuid4()),
+                                v_id,
                                 product_id,
                                 v.sku,
                                 v.size,
@@ -347,19 +294,153 @@ class SupabaseProductRepository(ProductRepository):
                                 v.price_paise,
                                 v.compare_at_paise,
                                 v.stock,
+                                v.is_active,
                             ),
-                        )
-
-                variants = self._fetch_variants_map(conn, [product_id]).get(
-                    product_id, []
+                        ).fetchone()
+                        if v_row:
+                            variants.append(_row_to_variant(v_row))
+                    assert row is not None
+                    return _row_to_product(row, variants)
+            except Exception as exc:
+                map_pg_conflict(
+                    exc,
+                    unique_message="A product with this slug or variant SKU already exists",
+                    unique_code="DUPLICATE_PRODUCT_OR_SKU",
                 )
-                assert row is not None
-                return _row_to_product(row, variants)
+                raise
+
+    def update(self, product_id: str, data: UpdateProductInput) -> Optional[Product]:
+        patch = data.model_dump(exclude_unset=True)
+        variants_data = patch.pop("variants", None)
+
+        with self._pool.connection() as conn:
+            try:
+                with conn.transaction():
+                    existing = conn.execute(
+                        "SELECT * FROM products WHERE id = %s;", (product_id,)
+                    ).fetchone()
+                    if not existing:
+                        return None
+
+                    if patch:
+                        sets = [f"{k} = %s" for k in patch.keys()]
+                        sets.append("updated_at = now()")
+                        params = [*patch.values(), product_id]
+                        row = conn.execute(
+                            f"UPDATE products SET {', '.join(sets)} WHERE id = %s RETURNING *;",
+                            tuple(params),
+                        ).fetchone()
+                    else:
+                        row = conn.execute(
+                            "UPDATE products SET updated_at = now() WHERE id = %s RETURNING *;",
+                            (product_id,),
+                        ).fetchone()
+
+                    if variants_data is not None and data.variants is not None:
+                        existing_rows = conn.execute(
+                            "SELECT id FROM product_variants WHERE product_id = %s FOR UPDATE;",
+                            (product_id,),
+                        ).fetchall()
+                        existing_ids = {r["id"] for r in existing_rows}
+                        referenced_ids: set[str] = set()
+                        if existing_ids:
+                            ref_rows = conn.execute(
+                                "SELECT DISTINCT variant_id FROM order_items WHERE variant_id = ANY(%s);",
+                                (list(existing_ids),),
+                            ).fetchall()
+                            referenced_ids = {r["variant_id"] for r in ref_rows}
+
+                        kept_ids: set[str] = set()
+                        for v in data.variants:
+                            if v.id and v.id in existing_ids:
+                                conn.execute(
+                                    """
+                                    UPDATE product_variants
+                                    SET sku = %s, size = %s, grind = %s, label = %s,
+                                        price_paise = %s, compare_at_paise = %s,
+                                        stock = %s, is_active = %s
+                                    WHERE id = %s AND product_id = %s;
+                                    """,
+                                    (
+                                        v.sku,
+                                        v.size,
+                                        v.grind,
+                                        v.label,
+                                        v.price_paise,
+                                        v.compare_at_paise,
+                                        v.stock,
+                                        v.is_active,
+                                        v.id,
+                                        product_id,
+                                    ),
+                                )
+                                kept_ids.add(v.id)
+                            else:
+                                new_vid = v.id or str(uuid4())
+                                conn.execute(
+                                    """
+                                    INSERT INTO product_variants (
+                                      id, product_id, sku, size, grind, label, price_paise, compare_at_paise, stock, is_active
+                                    )
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                                    """,
+                                    (
+                                        new_vid,
+                                        product_id,
+                                        v.sku,
+                                        v.size,
+                                        v.grind,
+                                        v.label,
+                                        v.price_paise,
+                                        v.compare_at_paise,
+                                        v.stock,
+                                        v.is_active,
+                                    ),
+                                )
+                                kept_ids.add(new_vid)
+
+                        for removed_id in existing_ids - kept_ids:
+                            if removed_id in referenced_ids:
+                                conn.execute(
+                                    """
+                                    UPDATE product_variants
+                                    SET is_active = false, stock = 0
+                                    WHERE id = %s AND product_id = %s;
+                                    """,
+                                    (removed_id, product_id),
+                                )
+                            else:
+                                conn.execute(
+                                    "DELETE FROM product_variants WHERE id = %s AND product_id = %s;",
+                                    (removed_id, product_id),
+                                )
+
+                    variants = self._fetch_variants_map(conn, [product_id]).get(
+                        product_id, []
+                    )
+                    assert row is not None
+                    return _row_to_product(row, variants)
+            except Exception as exc:
+                map_pg_conflict(
+                    exc,
+                    unique_message="A product with this slug or variant SKU already exists",
+                    unique_code="DUPLICATE_PRODUCT_OR_SKU",
+                    fk_message="Cannot delete product variant referenced by existing orders",
+                )
+                raise
 
     def delete(self, product_id: str) -> bool:
         with self._pool.connection() as conn:
-            res = conn.execute("DELETE FROM products WHERE id = %s;", (product_id,))
-            return res.rowcount > 0
+            try:
+                res = conn.execute("DELETE FROM products WHERE id = %s;", (product_id,))
+                return res.rowcount > 0
+            except Exception as exc:
+                map_pg_conflict(
+                    exc,
+                    fk_message="Cannot delete product referenced by existing orders; set isActive=false instead",
+                    fk_code="PRODUCT_IN_USE",
+                )
+                raise
 
     def update_variant_inventory(
         self,
@@ -414,7 +495,8 @@ class SupabaseProductRepository(ProductRepository):
             with conn.transaction():
                 rows = conn.execute(
                     """
-                    SELECT pv.id, pv.product_id, pv.label, pv.stock, p.name AS product_name, p.is_active
+                    SELECT pv.id, pv.product_id, pv.label, pv.stock, pv.is_active AS variant_active,
+                           p.name AS product_name, p.is_active
                     FROM product_variants pv
                     JOIN products p ON p.id = pv.product_id
                     WHERE pv.id = ANY(%s)
@@ -430,7 +512,12 @@ class SupabaseProductRepository(ProductRepository):
                 for product_id, variant_id in ordered_keys:
                     qty = aggregated[(product_id, variant_id)]
                     r = row_by_vid.get(variant_id)
-                    if not r or r["product_id"] != product_id or not r["is_active"]:
+                    if (
+                        not r
+                        or r["product_id"] != product_id
+                        or not r["is_active"]
+                        or not r.get("variant_active", True)
+                    ):
                         failures.append(
                             StockReservationFailure(
                                 product_id=product_id,
@@ -494,7 +581,7 @@ class SupabaseProductRepository(ProductRepository):
                 SELECT pv.*, p.name AS product_name, p.slug AS product_slug, p.category
                 FROM product_variants pv
                 JOIN products p ON p.id = pv.product_id
-                WHERE p.is_active = true AND pv.stock <= %s
+                WHERE p.is_active = true AND pv.is_active = true AND pv.stock <= %s
                 ORDER BY pv.stock ASC;
                 """,
                 (threshold,),

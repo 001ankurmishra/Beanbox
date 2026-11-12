@@ -47,6 +47,11 @@ class SessionRepository(ABC):
     ) -> Optional[Session]: ...
 
     @abstractmethod
+    def consume_grace_refresh_token(
+        self, session_id: str, token_hash: str
+    ) -> Optional[Session]: ...
+
+    @abstractmethod
     def check_device_history(
         self, user_id: str, user_agent: str
     ) -> tuple[bool, bool]: ...

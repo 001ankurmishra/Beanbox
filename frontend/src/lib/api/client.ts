@@ -1,3 +1,5 @@
+import { sanitizeNextPath } from '@/lib/redirect';
+
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, '') || 'http://localhost:4000/api';
 
@@ -133,7 +135,7 @@ function redirectToLogin(): void {
   if (typeof window === 'undefined') return;
   const { pathname, search } = window.location;
   if (PUBLIC_AUTH_ROUTES.some((p) => pathname.startsWith(p))) return;
-  const next = encodeURIComponent(`${pathname}${search}`);
+  const next = encodeURIComponent(sanitizeNextPath(`${pathname}${search}`));
   window.location.assign(`/login?next=${next}`);
 }
 

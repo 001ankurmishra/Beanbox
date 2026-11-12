@@ -4,9 +4,9 @@ from typing import Any, Optional
 
 from psycopg_pool import ConnectionPool
 
-from app.models.domain import EmailVerificationToken, PasswordResetToken, User
+from app.models.domain import EmailVerificationToken, PasswordResetToken, User, UserRole
 from app.repositories.interfaces import CreateUserInput, UpdateUserInput, UserRepository
-from app.repositories.supabase.db import iso_str
+from app.repositories.supabase.db import iso_str, map_pg_conflict
 
 
 def _row_to_user(row: dict[str, Any]) -> User:
@@ -70,26 +70,34 @@ class SupabaseUserRepository(UserRepository):
 
     def create(self, data: CreateUserInput) -> User:
         with self._pool.connection() as conn:
-            row = conn.execute(
-                """
-                INSERT INTO users (
-                    name, email, phone, password_hash, role,
-                    email_verified, email_verified_at, totp_enabled
+            try:
+                row = conn.execute(
+                    """
+                    INSERT INTO users (
+                        name, email, phone, password_hash, role,
+                        email_verified, email_verified_at, totp_enabled
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING *;
+                    """,
+                    (
+                        data.name.strip(),
+                        data.email.strip().lower(),
+                        data.phone.strip() if data.phone else None,
+                        data.password_hash,
+                        data.role,
+                        data.email_verified,
+                        data.email_verified_at,
+                        data.totp_enabled,
+                    ),
+                ).fetchone()
+            except Exception as exc:
+                map_pg_conflict(
+                    exc,
+                    unique_message="An account with this email already exists",
+                    unique_code="EMAIL_ALREADY_EXISTS",
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING *;
-                """,
-                (
-                    data.name.strip(),
-                    data.email.strip().lower(),
-                    data.phone.strip() if data.phone else None,
-                    data.password_hash,
-                    data.role,
-                    data.email_verified,
-                    data.email_verified_at,
-                    data.totp_enabled,
-                ),
-            ).fetchone()
+                raise
             assert row is not None
             return _row_to_user(row)
 
@@ -125,8 +133,45 @@ class SupabaseUserRepository(UserRepository):
         params.append(user_id)
         sql = f"UPDATE users SET {', '.join(sets)} WHERE id = %s RETURNING *;"
         with self._pool.connection() as conn:
-            row = conn.execute(sql, tuple(params)).fetchone()
+            try:
+                row = conn.execute(sql, tuple(params)).fetchone()
+            except Exception as exc:
+                map_pg_conflict(
+                    exc,
+                    unique_message="An account with this email already exists",
+                    unique_code="EMAIL_ALREADY_EXISTS",
+                )
+                raise
             return _row_to_user(row) if row else None
+
+    def update_role_safe(
+        self, user_id: str, next_role: UserRole
+    ) -> tuple[Optional[User], str]:
+        with self._pool.connection() as conn:
+            with conn.transaction():
+                admin_rows = conn.execute(
+                    "SELECT id FROM users WHERE role = 'admin' ORDER BY id FOR UPDATE;"
+                ).fetchall()
+                target_row = conn.execute(
+                    "SELECT * FROM users WHERE id = %s FOR UPDATE;",
+                    (user_id,),
+                ).fetchone()
+                if not target_row:
+                    return None, "not_found"
+                if (
+                    target_row["role"] == "admin"
+                    and next_role != "admin"
+                    and len(admin_rows) <= 1
+                ):
+                    return None, "last_admin"
+                if target_row["role"] == next_role:
+                    return _row_to_user(target_row), "ok"
+                updated = conn.execute(
+                    "UPDATE users SET role = %s, updated_at = now() WHERE id = %s RETURNING *;",
+                    (next_role, user_id),
+                ).fetchone()
+                assert updated is not None
+                return _row_to_user(updated), "ok"
 
     def list(self, page: int, limit: int) -> tuple[list[User], int]:
         offset = (page - 1) * limit
@@ -228,3 +273,15 @@ class SupabaseUserRepository(UserRepository):
                 """,
                 (user_id,),
             )
+
+    def delete_unused_tokens_for_user(self, user_id: str) -> None:
+        with self._pool.connection() as conn:
+            with conn.transaction():
+                conn.execute(
+                    "DELETE FROM email_verification_tokens WHERE user_id = %s AND used_at IS NULL;",
+                    (user_id,),
+                )
+                conn.execute(
+                    "DELETE FROM password_reset_tokens WHERE user_id = %s AND used_at IS NULL;",
+                    (user_id,),
+                )

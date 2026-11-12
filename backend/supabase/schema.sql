@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   previous_refresh_hashes TEXT[] NOT NULL DEFAULT '{}',
   grace_refresh_hash TEXT,
   grace_expires_at TIMESTAMPTZ,
+  grace_uses_remaining INTEGER NOT NULL DEFAULT 3 CHECK (grace_uses_remaining >= 0),
   family_id TEXT NOT NULL,
   user_agent TEXT NOT NULL,
   ip TEXT NOT NULL,
@@ -158,7 +159,8 @@ CREATE TABLE IF NOT EXISTS product_variants (
   label TEXT NOT NULL,
   price_paise INTEGER NOT NULL CHECK (price_paise >= 0),
   compare_at_paise INTEGER CHECK (compare_at_paise >= 0),
-  stock INTEGER NOT NULL DEFAULT 0 CHECK (stock >= 0)
+  stock INTEGER NOT NULL DEFAULT 0 CHECK (stock >= 0),
+  is_active BOOLEAN NOT NULL DEFAULT true
 );
 CREATE INDEX IF NOT EXISTS idx_product_variants_product_id ON product_variants (product_id);
 CREATE INDEX IF NOT EXISTS idx_product_variants_low_stock ON product_variants (stock) WHERE stock <= 5;

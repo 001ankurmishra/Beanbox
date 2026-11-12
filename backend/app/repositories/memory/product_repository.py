@@ -18,6 +18,7 @@ from app.repositories.interfaces import (
     StockReservationResult,
     UpdateProductInput,
 )
+from app.utils.errors import ConflictError
 
 
 def _now_iso() -> str:
@@ -165,48 +166,98 @@ class InMemoryProductRepository(ProductRepository):
             )
             return [p.model_copy(deep=True) for p in candidates[:limit]]
 
+    def _assert_unique_constraints(
+        self,
+        *,
+        slug: Optional[str] = None,
+        skus: Optional[list[str]] = None,
+        exclude_product_id: Optional[str] = None,
+    ) -> None:
+        if slug is not None:
+            norm_slug = slug.strip()
+            if any(
+                p.slug == norm_slug and p.id != exclude_product_id
+                for p in self._products
+            ):
+                raise ConflictError("A product with this slug already exists")
+        if skus is not None:
+            seen_in_payload: set[str] = set()
+            for raw_sku in skus:
+                s = raw_sku.strip()
+                if s in seen_in_payload:
+                    raise ConflictError(
+                        f"Duplicate SKU '{s}' in variants list", code="DUPLICATE_SKU"
+                    )
+                seen_in_payload.add(s)
+            existing_skus = {
+                v.sku
+                for p in self._products
+                if p.id != exclude_product_id
+                for v in p.variants
+            }
+            for s in seen_in_payload:
+                if s in existing_skus:
+                    raise ConflictError(
+                        f"A product variant with SKU '{s}' already exists",
+                        code="DUPLICATE_SKU",
+                    )
+
     def create(self, data: CreateProductInput) -> Product:
         now = _now_iso()
-        variants = [
-            ProductVariant(
-                id=v.id or str(uuid4()),
-                sku=v.sku,
-                size=v.size,
-                grind=v.grind,
-                label=v.label,
-                price_paise=v.price_paise,
-                compare_at_paise=v.compare_at_paise,
-                stock=v.stock,
-            )
-            for v in data.variants
-        ]
-        product = Product(
-            id=str(uuid4()),
-            name=data.name,
-            slug=data.slug,
-            short_description=data.short_description,
-            description=data.description,
-            category=data.category,
-            roast_level=data.roast_level,
-            origin=data.origin,
-            tasting_notes=list(data.tasting_notes),
-            images=list(data.images),
-            variants=variants,
-            is_featured=data.is_featured,
-            is_active=data.is_active,
-            rating_average=0.0,
-            rating_count=0,
-            created_at=now,
-            updated_at=now,
-        )
         with self._lock:
+            self._assert_unique_constraints(
+                slug=data.slug,
+                skus=[v.sku for v in data.variants],
+            )
+            variants = [
+                ProductVariant(
+                    id=v.id or str(uuid4()),
+                    sku=v.sku,
+                    size=v.size,
+                    grind=v.grind,
+                    label=v.label,
+                    price_paise=v.price_paise,
+                    compare_at_paise=v.compare_at_paise,
+                    stock=v.stock,
+                    is_active=v.is_active,
+                )
+                for v in data.variants
+            ]
+            product = Product(
+                id=str(uuid4()),
+                name=data.name,
+                slug=data.slug,
+                short_description=data.short_description,
+                description=data.description,
+                category=data.category,
+                roast_level=data.roast_level,
+                origin=data.origin,
+                tasting_notes=list(data.tasting_notes),
+                images=list(data.images),
+                variants=variants,
+                is_featured=data.is_featured,
+                is_active=data.is_active,
+                rating_average=0.0,
+                rating_count=0,
+                created_at=now,
+                updated_at=now,
+            )
             self._products.append(product.model_copy(deep=True))
-        return product
+            return product
 
     def update(self, product_id: str, data: UpdateProductInput) -> Optional[Product]:
         with self._lock:
             for idx, existing in enumerate(self._products):
                 if existing.id == product_id:
+                    self._assert_unique_constraints(
+                        slug=data.slug,
+                        skus=(
+                            [v.sku for v in data.variants]
+                            if data.variants is not None
+                            else None
+                        ),
+                        exclude_product_id=product_id,
+                    )
                     updated = existing.model_copy(deep=True)
                     patch = data.model_dump(exclude_unset=True)
                     if "variants" in patch and data.variants is not None:
@@ -220,8 +271,10 @@ class InMemoryProductRepository(ProductRepository):
                                 price_paise=v.price_paise,
                                 compare_at_paise=v.compare_at_paise,
                                 stock=v.stock,
+                                is_active=v.is_active,
                             )
                             for v in data.variants
+                            if v.is_active
                         ]
                         del patch["variants"]
                     for k, val in patch.items():

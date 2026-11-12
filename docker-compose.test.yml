@@ -1,0 +1,17 @@
+services:
+  postgres_test:
+    image: postgres:16-alpine
+    container_name: beanbox-postgres-test
+    environment:
+      POSTGRES_USER: beanbox_test
+      POSTGRES_PASSWORD: beanbox_test_password
+      POSTGRES_DB: beanbox_test
+    ports:
+      - "5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U beanbox_test -d beanbox_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 15

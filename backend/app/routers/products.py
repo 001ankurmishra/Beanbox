@@ -102,6 +102,7 @@ def delete_review(
     services.review_service.delete_review(
         review_id=review_id,
         user_id=principal.id,
-        is_admin=principal.role == "admin",
+        is_admin=principal.is_effective_admin,
+        is_admin_role=principal.role == "admin",
     )
     return make_success_response({"message": "Review deleted"})

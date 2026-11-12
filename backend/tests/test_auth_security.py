@@ -56,7 +56,13 @@ class MockGoogleOAuthClient(GoogleOAuthClient):
 
 
 def test_access_token_claims_expiry_and_production_cookie_flags():
-    settings = make_test_settings(APP_ENV="production", COOKIE_SECURE="auto")
+    settings = make_test_settings(
+        APP_ENV="production",
+        COOKIE_SECURE="auto",
+        PAYMENT_PROVIDER="stripe",
+        STRIPE_SECRET_KEY="sk_test_production_cookie_check",
+        STRIPE_WEBHOOK_SECRET="whsec_production_cookie_check",
+    )
     app = create_test_app(settings=settings)
 
     # Simulate HTTPS production client so Secure cookies round-trip cleanly
@@ -185,10 +191,10 @@ def test_brute_force_lockout_exponential_backoff_and_no_enumeration():
     assert locked.json()["error"]["code"] == "ACCOUNT_LOCKED"
 
     # Simulate expiry of first 15-min lock, then fail once more -> exponential backoff doubles to 30 min
-    rec = app.state.repos.login_attempts.get_by_key("acct:arjun@beanbox.in")
+    rec = app.state.repos.login_attempts.get_by_key("pair:arjun@beanbox.in|testclient")
     assert rec is not None and rec.lockout_level == 1
     past_iso = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
-    app.state.repos.login_attempts._records["acct:arjun@beanbox.in"].locked_until = past_iso
+    app.state.repos.login_attempts._records["pair:arjun@beanbox.in|testclient"].locked_until = past_iso
     app.state.repos.login_attempts._records["ip:testclient"].locked_until = past_iso
 
     fail6 = client.post(
@@ -196,7 +202,7 @@ def test_brute_force_lockout_exponential_backoff_and_no_enumeration():
         json={"email": "arjun@beanbox.in", "password": "WrongPassword99"},
     )
     assert fail6.status_code == 401
-    rec2 = app.state.repos.login_attempts.get_by_key("acct:arjun@beanbox.in")
+    rec2 = app.state.repos.login_attempts.get_by_key("pair:arjun@beanbox.in|testclient")
     assert rec2 is not None and rec2.lockout_level == 2
     lock_dt = datetime.fromisoformat(rec2.locked_until.replace("Z", "+00:00"))
     # Lockout duration grew to ~30 minutes

@@ -87,20 +87,30 @@ class ReviewService:
         )
         return review
 
-    def delete_review(self, review_id: str, user_id: str, is_admin: bool) -> None:
-        review = (
-            self._review_repo.find_by_id(review_id)
-            if is_admin
-            else self._review_repo.find_by_id_for_user(review_id, user_id)
-        )
-        if not review or (not is_admin and review.user_id != user_id):
-            raise NotFoundError("Review not found")
+    def delete_review(
+        self,
+        review_id: str,
+        user_id: str,
+        is_admin: bool,
+        *,
+        is_admin_role: bool = False,
+    ) -> None:
+        if is_admin:
+            review = self._review_repo.find_by_id(review_id)
+            if not review:
+                raise NotFoundError("Review not found")
+            deleted = self._review_repo.delete(review.id)
+        else:
+            review = self._review_repo.find_by_id_for_user(review_id, user_id)
+            if not review or review.user_id != user_id:
+                if is_admin_role:
+                    raise ForbiddenError(
+                        "Two-factor authentication is required for administrator access. Please enable 2FA in Security Settings.",
+                        code="ADMIN_2FA_REQUIRED",
+                    )
+                raise NotFoundError("Review not found")
+            deleted = self._review_repo.delete_for_user(review.id, user_id)
 
-        deleted = (
-            self._review_repo.delete(review.id)
-            if is_admin
-            else self._review_repo.delete_for_user(review.id, user_id)
-        )
         if not deleted:
             raise NotFoundError("Review not found")
         stats = self._review_repo.get_stats_for_product(review.product_id)

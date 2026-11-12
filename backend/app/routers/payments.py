@@ -18,7 +18,7 @@ from app.schemas.order import (
 )
 from app.services import Services
 from app.services.payment_service import sign_mock_webhook_payload
-from app.utils.errors import BadRequestError
+from app.utils.errors import BadRequestError, NotFoundError
 from app.utils.response import make_success_response
 
 router = APIRouter(prefix="/api/payments", tags=["Payments"])
@@ -61,8 +61,8 @@ def trigger_mock_payment(
     services: Services = Depends(get_services),
     settings: Settings = Depends(get_app_settings),
 ):
-    if services.payment_provider.name != "mock":
-        raise BadRequestError("Mock payment triggers are disabled in Stripe mode")
+    if settings.app_env == "production" or services.payment_provider.name != "mock":
+        raise NotFoundError("Mock payment trigger is disabled")
 
     order = services.order_service.get_order_for_user(
         body.order_id, principal.id, False

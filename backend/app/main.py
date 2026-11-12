@@ -136,8 +136,14 @@ def create_app(
         CORSMiddleware,
         allow_origins=[app_settings.frontend_url],
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "X-CSRF-Token",
+            "X-Request-Id",
+            "X-Guest-Session-Id",
+        ],
         expose_headers=["X-CSRF-Token", "X-Request-Id"],
     )
 

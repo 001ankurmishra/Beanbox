@@ -17,6 +17,7 @@ def _row_to_session(row: dict[str, Any]) -> Session:
         previous_refresh_hashes=list(row.get("previous_refresh_hashes") or []),
         grace_refresh_hash=row.get("grace_refresh_hash"),
         grace_expires_at=iso_str(row.get("grace_expires_at")),
+        grace_uses_remaining=int(row.get("grace_uses_remaining", 3)),
         family_id=row["family_id"],
         user_agent=row["user_agent"],
         ip=row["ip"],
@@ -101,6 +102,7 @@ class SupabaseSessionRepository(SessionRepository):
         max_history: int = 100,
     ) -> Optional[Session]:
         grace_hash = expected_hash if grace_expires_at is not None else None
+        grace_uses = 3 if grace_expires_at is not None else 0
         with self._pool.connection() as conn:
             row = conn.execute(
                 """
@@ -114,6 +116,7 @@ class SupabaseSessionRepository(SessionRepository):
                     refresh_token_hash = %s,
                     grace_refresh_hash = %s,
                     grace_expires_at = %s,
+                    grace_uses_remaining = %s,
                     expires_at = %s,
                     ip = %s,
                     user_agent = %s,
@@ -130,12 +133,35 @@ class SupabaseSessionRepository(SessionRepository):
                     new_hash,
                     grace_hash,
                     grace_expires_at,
+                    grace_uses,
                     new_expires_at,
                     ip,
                     user_agent,
                     session_id,
                     expected_hash,
                 ),
+            ).fetchone()
+            return _row_to_session(row) if row else None
+
+    def consume_grace_refresh_token(
+        self, session_id: str, token_hash: str
+    ) -> Optional[Session]:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE sessions
+                SET grace_uses_remaining = grace_uses_remaining - 1,
+                    last_used_at = now()
+                WHERE id = %s
+                  AND grace_refresh_hash = %s
+                  AND revoked_at IS NULL
+                  AND grace_expires_at IS NOT NULL
+                  AND grace_expires_at > now()
+                  AND expires_at > now()
+                  AND grace_uses_remaining > 0
+                RETURNING *;
+                """,
+                (session_id, token_hash),
             ).fetchone()
             return _row_to_session(row) if row else None
 

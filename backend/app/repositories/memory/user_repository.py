@@ -5,8 +5,9 @@ from threading import RLock
 from typing import Optional
 from uuid import uuid4
 
-from app.models.domain import EmailVerificationToken, PasswordResetToken, User
+from app.models.domain import EmailVerificationToken, PasswordResetToken, User, UserRole
 from app.repositories.interfaces import CreateUserInput, UpdateUserInput, UserRepository
+from app.utils.errors import ConflictError
 
 
 def _now_iso() -> str:
@@ -37,22 +38,28 @@ class InMemoryUserRepository(UserRepository):
 
     def create(self, data: CreateUserInput) -> User:
         now = _now_iso()
-        user = User(
-            id=str(uuid4()),
-            name=data.name.strip(),
-            email=data.email.strip().lower(),
-            phone=data.phone.strip() if data.phone else None,
-            password_hash=data.password_hash,
-            role=data.role,
-            email_verified=data.email_verified,
-            email_verified_at=data.email_verified_at,
-            totp_enabled=data.totp_enabled,
-            created_at=now,
-            updated_at=now,
-        )
+        norm_email = data.email.strip().lower()
         with self._lock:
+            if any(u.email.lower() == norm_email for u in self._users):
+                raise ConflictError(
+                    "An account with this email already exists",
+                    code="EMAIL_ALREADY_EXISTS",
+                )
+            user = User(
+                id=str(uuid4()),
+                name=data.name.strip(),
+                email=norm_email,
+                phone=data.phone.strip() if data.phone else None,
+                password_hash=data.password_hash,
+                role=data.role,
+                email_verified=data.email_verified,
+                email_verified_at=data.email_verified_at,
+                totp_enabled=data.totp_enabled,
+                created_at=now,
+                updated_at=now,
+            )
             self._users.append(user.model_copy(deep=True))
-        return user
+            return user
 
     def update(self, user_id: str, data: UpdateUserInput) -> Optional[User]:
         with self._lock:
@@ -77,6 +84,31 @@ class InMemoryUserRepository(UserRepository):
                     self._users[idx] = updated.model_copy(deep=True)
                     return updated
             return None
+
+    def update_role_safe(
+        self, user_id: str, next_role: UserRole
+    ) -> tuple[Optional[User], str]:
+        with self._lock:
+            target_idx: Optional[int] = None
+            target: Optional[User] = None
+            admin_count = 0
+            for idx, existing in enumerate(self._users):
+                if existing.role == "admin":
+                    admin_count += 1
+                if existing.id == user_id:
+                    target_idx = idx
+                    target = existing
+            if target is None or target_idx is None:
+                return None, "not_found"
+            if target.role == "admin" and next_role != "admin" and admin_count <= 1:
+                return None, "last_admin"
+            if target.role == next_role:
+                return target.model_copy(deep=True), "ok"
+            updated = target.model_copy(deep=True)
+            updated.role = next_role
+            updated.updated_at = _now_iso()
+            self._users[target_idx] = updated.model_copy(deep=True)
+            return updated, "ok"
 
     def list(self, page: int, limit: int) -> tuple[list[User], int]:
         with self._lock:
@@ -171,3 +203,16 @@ class InMemoryUserRepository(UserRepository):
             for t in self._verify_tokens:
                 if t.user_id == user_id and t.used_at is None:
                     t.used_at = now
+
+    def delete_unused_tokens_for_user(self, user_id: str) -> None:
+        with self._lock:
+            self._verify_tokens = [
+                t
+                for t in self._verify_tokens
+                if not (t.user_id == user_id and t.used_at is None)
+            ]
+            self._reset_tokens = [
+                t
+                for t in self._reset_tokens
+                if not (t.user_id == user_id and t.used_at is None)
+            ]

@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { Heart, LogOut, MapPin, Package, ShieldCheck, User } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
+import { sanitizeNextPath } from '@/lib/redirect';
 
 const ACCOUNT_TABS = [
   { href: '/account', label: 'Profile', icon: User },
@@ -27,7 +28,7 @@ export default function AccountLayout({
 
   useEffect(() => {
     if (!isLoading && !user) {
-      router.replace(`/login?next=${encodeURIComponent(pathname || '/account')}`);
+      router.replace(`/login?next=${encodeURIComponent(sanitizeNextPath(pathname || '/account'))}`);
     }
   }, [isLoading, user, router, pathname]);
 

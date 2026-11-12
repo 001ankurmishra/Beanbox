@@ -35,6 +35,7 @@ class AuthPrincipal:
     email: str = ""
     email_verified: bool = False
     totp_enabled: bool = False
+    is_effective_admin: bool = False
 
 
 def get_services(request: Request) -> Services:
@@ -58,14 +59,14 @@ def get_request_context(
 
 
 def _extract_token(request: Request) -> Optional[str]:
+    # Cookie vs Bearer auth must never mix: if Authorization Bearer is used, ignore cookies.
+    auth_header = request.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+        return token or None
     cookie_token = request.cookies.get(ACCESS_COOKIE_NAME)
     if cookie_token:
         return cookie_token
-    auth_header = request.headers.get("authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header[7:].strip()
-        if token:
-            return token
     return None
 
 
@@ -135,6 +136,7 @@ def require_user(
         email=user.email,
         email_verified=user.email_verified,
         totp_enabled=user.totp_enabled,
+        is_effective_admin=(user.role == "admin" and user.totp_enabled),
     )
 
 
@@ -177,6 +179,7 @@ def require_role(*roles: UserRole) -> Callable[..., AuthPrincipal]:
             email=db_user.email,
             email_verified=db_user.email_verified,
             totp_enabled=db_user.totp_enabled,
+            is_effective_admin=(db_user.role == "admin" and db_user.totp_enabled),
         )
 
     return _role_guard

@@ -17,6 +17,7 @@ class LoginAttemptRepository(ABC):
         key_type: LoginAttemptKeyType,
         max_failures: int = 5,
         base_lock_minutes: int = 15,
+        failure_window_minutes: int = 15,
     ) -> LoginAttemptRecord: ...
 
     @abstractmethod

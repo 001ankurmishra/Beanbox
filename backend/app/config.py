@@ -17,7 +17,9 @@ class Settings(BaseSettings):
         default="development", alias="APP_ENV"
     )
     frontend_url: str = Field(default="http://localhost:3000", alias="FRONTEND_URL")
-    trust_proxy_headers: bool = Field(default=False, alias="TRUST_PROXY_HEADERS")
+    trusted_proxy_count: int = Field(
+        default=0, alias="TRUSTED_PROXY_COUNT", ge=0, le=10
+    )
     cookie_secure: Literal["auto", "true", "false"] = Field(
         default="auto", alias="COOKIE_SECURE"
     )

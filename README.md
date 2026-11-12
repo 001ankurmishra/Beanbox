@@ -52,9 +52,15 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 # Verify seed data
 .venv/bin/python -m app.seed.run_seed
 
-# Run automated tests & lint
+# Run automated tests & lint (in-memory unit + security suites)
 .venv/bin/pytest -v
 .venv/bin/ruff check app tests
+
+# Run Postgres concurrency & parity suite against isolated local Docker Postgres (NEVER production Supabase)
+docker compose -f ../docker-compose.test.yml up -d --wait
+DATABASE_URL_TEST="postgresql://beanbox_test:beanbox_test_password@localhost:5433/beanbox_test" \
+  .venv/bin/pytest -v -m pg
+docker compose -f ../docker-compose.test.yml down -v
 
 # Start FastAPI server
 .venv/bin/uvicorn app.main:app --reload --port 4000

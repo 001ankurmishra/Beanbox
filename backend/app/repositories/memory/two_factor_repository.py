@@ -18,6 +18,7 @@ class InMemoryTwoFactorRepository(TwoFactorRepository):
         self._lock = RLock()
         self._secrets: dict[str, TotpSecret] = {}
         self._recovery_codes: list[RecoveryCode] = []
+        self._consumed_challenges: dict[str, datetime] = {}
 
     def get_totp_secret(self, user_id: str) -> Optional[TotpSecret]:
         with self._lock:
@@ -54,12 +55,31 @@ class InMemoryTwoFactorRepository(TwoFactorRepository):
             sec.updated_at = now
             return sec.model_copy(deep=True)
 
-    def update_last_used_timestep(self, user_id: str, timestep: int) -> None:
+    def consume_totp_timestep(self, user_id: str, timestep: int) -> bool:
         with self._lock:
             sec = self._secrets.get(user_id)
-            if sec:
-                sec.last_used_timestep = timestep
-                sec.updated_at = _now_iso()
+            if not sec:
+                return False
+            if (
+                sec.last_used_timestep is not None
+                and sec.last_used_timestep >= timestep
+            ):
+                return False
+            sec.last_used_timestep = timestep
+            sec.updated_at = _now_iso()
+            return True
+
+    def consume_challenge_jti(self, jti: str, expires_at: str) -> bool:
+        now_dt = datetime.now(timezone.utc)
+        exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        with self._lock:
+            expired = [k for k, v in self._consumed_challenges.items() if v <= now_dt]
+            for k in expired:
+                self._consumed_challenges.pop(k, None)
+            if jti in self._consumed_challenges:
+                return False
+            self._consumed_challenges[jti] = exp_dt
+            return True
 
     def disable_totp(self, user_id: str) -> None:
         with self._lock:

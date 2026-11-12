@@ -4,7 +4,6 @@ import json
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from threading import RLock
 from typing import Literal, Optional, Union
 from uuid import uuid4
 
@@ -12,7 +11,7 @@ import jwt
 import pyotp
 
 from app.config import Settings
-from app.models.domain import PublicSession, PublicUser, Session, User, UserRole
+from app.models.domain import PublicSession, PublicUser, User, UserRole
 from app.repositories.interfaces import (
     CreateOAuthAccountInput,
     CreateSessionInput,
@@ -136,8 +135,6 @@ class AuthService:
         self._email_service = email_service
         self._google_oauth = google_oauth_client
         self._settings = settings
-        self._challenge_lock = RLock()
-        self._consumed_2fa_jtis: dict[str, datetime] = {}
 
     def sign_access_token(self, user: User, session_id: str) -> str:
         now = _now()
@@ -243,17 +240,12 @@ class AuthService:
         return jwt.encode(payload, self._settings.jwt_secret, algorithm="HS256")
 
     def _consume_2fa_jti(self, jti: str, exp_ts: int) -> bool:
-        now = _now()
-        with self._challenge_lock:
-            expired_keys = [
-                k for k, v in self._consumed_2fa_jtis.items() if v <= now
-            ]
-            for k in expired_keys:
-                self._consumed_2fa_jtis.pop(k, None)
-            if jti in self._consumed_2fa_jtis:
-                return False
-            self._consumed_2fa_jtis[jti] = datetime.fromtimestamp(exp_ts, tz=timezone.utc)
-            return True
+        expires_at = (
+            datetime.fromtimestamp(exp_ts, tz=timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        return self._two_factor_repo.consume_challenge_jti(jti, expires_at)
 
     def _check_not_locked(self, key: str) -> bool:
         rec = self._login_attempt_repo.get_by_key(key)
@@ -329,10 +321,15 @@ class AuthService:
     ) -> LoginOutcome:
         req_ctx = ctx or RequestContext()
         norm_email = email.strip().lower()
+        pair_key = f"pair:{norm_email}|{req_ctx.ip}"
         acct_key = f"acct:{norm_email}"
         ip_key = f"ip:{req_ctx.ip}"
 
-        if self._check_not_locked(acct_key) or self._check_not_locked(ip_key):
+        if (
+            self._check_not_locked(pair_key)
+            or self._check_not_locked(acct_key)
+            or self._check_not_locked(ip_key)
+        ):
             dummy_password_work(password)
             self._audit.record(
                 event_type="login_locked",
@@ -356,10 +353,16 @@ class AuthService:
 
         if not valid or not user:
             self._login_attempt_repo.record_failure(
-                acct_key,
+                pair_key,
                 "account",
                 max_failures=self._settings.login_max_failures,
                 base_lock_minutes=self._settings.login_lock_base_minutes,
+            )
+            self._login_attempt_repo.record_failure(
+                acct_key,
+                "account",
+                max_failures=30,
+                base_lock_minutes=15,
             )
             self._login_attempt_repo.record_failure(
                 ip_key,
@@ -376,6 +379,7 @@ class AuthService:
             )
             raise UnauthorizedError("Invalid credentials", code="INVALID_CREDENTIALS")
 
+        self._login_attempt_repo.reset(pair_key)
         self._login_attempt_repo.reset(acct_key)
         self._login_attempt_repo.reset(ip_key)
 
@@ -410,16 +414,6 @@ class AuthService:
             target_id=issued.session_id,
         )
         return issued
-
-    @staticmethod
-    def _is_within_grace_window(session: Session, token_hash: str) -> bool:
-        if (
-            not session.grace_refresh_hash
-            or not session.grace_expires_at
-            or session.grace_refresh_hash != token_hash
-        ):
-            return False
-        return _parse_iso(session.grace_expires_at) > _now()
 
     def refresh_session(
         self,
@@ -460,21 +454,27 @@ class AuthService:
                         "Refresh token expired. Please sign in again.",
                         code="REFRESH_TOKEN_EXPIRED",
                     )
-                if self._is_within_grace_window(grace_sess, token_hash):
-                    user = self._user_repo.find_by_id(grace_sess.user_id)
+                consumed_grace = self._session_repo.consume_grace_refresh_token(
+                    grace_sess.id, token_hash
+                )
+                if consumed_grace is not None:
+                    user = self._user_repo.find_by_id(consumed_grace.user_id)
                     if not user:
                         raise UnauthorizedError("User session no longer valid")
-                    access_token = self.sign_access_token(user, grace_sess.id)
+                    access_token = self.sign_access_token(user, consumed_grace.id)
                     self._audit.record(
                         event_type="refresh_grace_hit",
                         outcome="success",
                         ctx=req_ctx,
                         user_id=user.id,
-                        target_id=grace_sess.id,
+                        target_id=consumed_grace.id,
+                        metadata={
+                            "graceUsesRemaining": consumed_grace.grace_uses_remaining
+                        },
                     )
                     return IssuedSessionTokens(
                         user=to_public_user(user),
-                        session_id=grace_sess.id,
+                        session_id=consumed_grace.id,
                         access_token=access_token,
                         refresh_token=None,
                     )
@@ -962,15 +962,9 @@ class AuthService:
             step = base_step + offset
             expected = totp.generate_otp(step)
             if secrets.compare_digest(expected, cleaned):
-                if (
-                    prevent_replay
-                    and sec_rec.last_used_timestep is not None
-                    and step <= sec_rec.last_used_timestep
-                ):
-                    return False
-                if prevent_replay:
-                    self._two_factor_repo.update_last_used_timestep(user_id, step)
-                return True
+                if not prevent_replay:
+                    return True
+                return self._two_factor_repo.consume_totp_timestep(user_id, step)
         return False
 
     def enable_2fa(
@@ -1331,16 +1325,21 @@ class AuthService:
             user_by_email = self._user_repo.find_by_email(identity.email)
             if user_by_email:
                 user = user_by_email
+                revoked_unverified = 0
                 if not user.email_verified:
                     user = (
                         self._user_repo.update(
                             user.id,
                             UpdateUserInput(
-                                email_verified=True, email_verified_at=_iso(_now())
+                                password_hash="!oauth-only",
+                                email_verified=True,
+                                email_verified_at=_iso(_now()),
                             ),
                         )
                         or user
                     )
+                    self._user_repo.delete_unused_tokens_for_user(user.id)
+                    revoked_unverified = self._session_repo.revoke_all_for_user(user.id)
                 self._oauth_repo.create(
                     CreateOAuthAccountInput(
                         user_id=user.id,
@@ -1354,6 +1353,7 @@ class AuthService:
                     outcome="success",
                     ctx=req_ctx,
                     user_id=user.id,
+                    metadata={"revokedUnverifiedSessions": revoked_unverified},
                 )
             else:
                 now_iso = _iso(_now())

@@ -20,6 +20,27 @@ class InMemoryPaymentEventRepository(PaymentEventRepository):
         with self._lock:
             return any(e.event_id == event_id for e in self._events)
 
+    def claim_event(
+        self,
+        event_id: str,
+        provider: Literal["stripe", "mock"],
+        event_type: str,
+        order_id: Optional[str] = None,
+    ) -> bool:
+        with self._lock:
+            if any(e.event_id == event_id for e in self._events):
+                return False
+            event = PaymentEvent(
+                id=str(uuid4()),
+                event_id=event_id,
+                provider=provider,
+                event_type=event_type,
+                order_id=order_id,
+                processed_at=_now_iso(),
+            )
+            self._events.append(event.model_copy(deep=True))
+            return True
+
     def record_event(
         self,
         event_id: str,

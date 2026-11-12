@@ -83,6 +83,7 @@ class Session(CamelModel):
     previous_refresh_hashes: list[str] = []
     grace_refresh_hash: Optional[str] = None
     grace_expires_at: Optional[str] = None
+    grace_uses_remaining: int = 3
     family_id: str
     user_agent: str
     ip: str
@@ -173,6 +174,7 @@ class ProductVariant(CamelModel):
     price_paise: int
     compare_at_paise: Optional[int] = None
     stock: int
+    is_active: bool = True
 
 
 class Product(CamelModel):

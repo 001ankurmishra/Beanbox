@@ -44,6 +44,11 @@ class UserRepository(ABC):
     def update(self, user_id: str, data: UpdateUserInput) -> Optional[User]: ...
 
     @abstractmethod
+    def update_role_safe(
+        self, user_id: str, next_role: UserRole
+    ) -> tuple[Optional[User], str]: ...
+
+    @abstractmethod
     def list(self, page: int, limit: int) -> tuple[list[User], int]: ...
 
     @abstractmethod
@@ -85,3 +90,6 @@ class UserRepository(ABC):
 
     @abstractmethod
     def invalidate_unused_email_verification_tokens(self, user_id: str) -> None: ...
+
+    @abstractmethod
+    def delete_unused_tokens_for_user(self, user_id: str) -> None: ...

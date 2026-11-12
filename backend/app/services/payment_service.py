@@ -11,7 +11,7 @@ import stripe
 
 from app.config import Settings
 from app.models.domain import CamelModel, Order
-from app.utils.errors import BadRequestError
+from app.utils.errors import AppError, BadRequestError
 
 
 @dataclass
@@ -145,39 +145,50 @@ class StripePaymentProvider(PaymentProvider):
     name: Literal["stripe", "mock"] = "stripe"
 
     def __init__(self, secret_key: str, webhook_secret: str) -> None:
-        self._client = stripe.StripeClient(secret_key)
+        self._client = stripe.StripeClient(
+            secret_key,
+            http_client=stripe.HTTPXClient(timeout=10.0),
+            max_network_retries=1,
+        )
         self._webhook_secret = webhook_secret
 
     def create_checkout_session(
         self, data: CreateCheckoutSessionInput
     ) -> CheckoutSessionResult:
         order = data.order
-        session = self._client.checkout.sessions.create(
-            params={
-                "mode": "payment",
-                "customer_email": data.customer_email,
-                "client_reference_id": order.id,
-                "success_url": data.success_url,
-                "cancel_url": data.cancel_url,
-                "metadata": {
-                    "orderId": order.id,
-                    "orderNumber": order.order_number,
-                },
-                "line_items": [
-                    {
-                        "price_data": {
-                            "currency": "inr",
-                            "unit_amount": order.pricing.total_paise,
-                            "product_data": {
-                                "name": f"BeanBox Order {order.order_number}",
-                                "description": f"{len(order.items)} item(s) including 5% GST & shipping",
+        try:
+            session = self._client.v1.checkout.sessions.create(
+                params={
+                    "mode": "payment",
+                    "customer_email": data.customer_email,
+                    "client_reference_id": order.id,
+                    "success_url": data.success_url,
+                    "cancel_url": data.cancel_url,
+                    "metadata": {
+                        "orderId": order.id,
+                        "orderNumber": order.order_number,
+                    },
+                    "line_items": [
+                        {
+                            "price_data": {
+                                "currency": "inr",
+                                "unit_amount": order.pricing.total_paise,
+                                "product_data": {
+                                    "name": f"BeanBox Order {order.order_number}",
+                                    "description": f"{len(order.items)} item(s) including 5% GST & shipping",
+                                },
                             },
-                        },
-                        "quantity": 1,
-                    }
-                ],
-            }
-        )
+                            "quantity": 1,
+                        }
+                    ],
+                }
+            )
+        except stripe.StripeError as exc:
+            raise AppError(
+                502,
+                "PAYMENT_PROVIDER_ERROR",
+                "Payment gateway unavailable or rejected the checkout request",
+            ) from exc
         if not session.url:
             raise BadRequestError("Failed to obtain Stripe Checkout URL")
 
@@ -251,17 +262,40 @@ class StripePaymentProvider(PaymentProvider):
     def refund_payment(self, payment_intent_id: str, amount_paise: int) -> None:
         if not payment_intent_id:
             return
-        self._client.refunds.create(
-            params={"payment_intent": payment_intent_id, "amount": amount_paise}
-        )
+        try:
+            self._client.v1.refunds.create(
+                params={"payment_intent": payment_intent_id, "amount": amount_paise}
+            )
+        except stripe.StripeError as exc:
+            raise AppError(
+                502,
+                "PAYMENT_PROVIDER_ERROR",
+                "Failed to issue refund with payment gateway",
+            ) from exc
 
 
 def create_payment_provider(settings: Settings) -> PaymentProvider:
-    wants_stripe = settings.payment_provider == "stripe" or (
-        settings.payment_provider == "auto" and bool(settings.stripe_secret_key)
-    )
-    if wants_stripe and settings.stripe_secret_key:
+    if settings.app_env == "production":
+        if settings.payment_provider != "stripe" or not settings.stripe_secret_key.strip():
+            raise RuntimeError(
+                "Refusing to start in production: PAYMENT_PROVIDER must be 'stripe' and STRIPE_SECRET_KEY must be set."
+            )
+        if not settings.stripe_webhook_secret.strip():
+            raise RuntimeError(
+                "Refusing to start in production: STRIPE_WEBHOOK_SECRET must be set."
+            )
+
+    if settings.payment_provider == "stripe":
+        if not settings.stripe_secret_key.strip():
+            raise RuntimeError(
+                "PAYMENT_PROVIDER='stripe' requires a non-empty STRIPE_SECRET_KEY."
+            )
         return StripePaymentProvider(
-            settings.stripe_secret_key, settings.stripe_webhook_secret
+            settings.stripe_secret_key.strip(), settings.stripe_webhook_secret.strip()
+        )
+
+    if settings.payment_provider == "auto" and settings.stripe_secret_key.strip():
+        return StripePaymentProvider(
+            settings.stripe_secret_key.strip(), settings.stripe_webhook_secret.strip()
         )
     return MockPaymentProvider(settings.frontend_url, settings.mock_webhook_secret)

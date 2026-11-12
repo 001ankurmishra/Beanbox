@@ -10,7 +10,7 @@ from app.repositories.interfaces import (
     CreateCouponInput,
     UpdateCouponInput,
 )
-from app.repositories.supabase.db import iso_str
+from app.repositories.supabase.db import iso_str, map_pg_conflict
 
 
 def _row_to_coupon(row: dict[str, Any]) -> Coupon:
@@ -64,27 +64,35 @@ class SupabaseCouponRepository(CouponRepository):
 
     def create(self, data: CreateCouponInput) -> Coupon:
         with self._pool.connection() as conn:
-            row = conn.execute(
-                """
-                INSERT INTO coupons (
-                  code, description, type, value, min_order_paise,
-                  max_discount_paise, expires_at, usage_limit, is_active
+            try:
+                row = conn.execute(
+                    """
+                    INSERT INTO coupons (
+                      code, description, type, value, min_order_paise,
+                      max_discount_paise, expires_at, usage_limit, is_active
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING *;
+                    """,
+                    (
+                        data.code.strip().upper(),
+                        data.description,
+                        data.type,
+                        data.value,
+                        data.min_order_paise,
+                        data.max_discount_paise,
+                        data.expires_at,
+                        data.usage_limit,
+                        data.is_active,
+                    ),
+                ).fetchone()
+            except Exception as exc:
+                map_pg_conflict(
+                    exc,
+                    unique_message="A coupon with this code already exists",
+                    unique_code="DUPLICATE_COUPON",
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING *;
-                """,
-                (
-                    data.code.strip().upper(),
-                    data.description,
-                    data.type,
-                    data.value,
-                    data.min_order_paise,
-                    data.max_discount_paise,
-                    data.expires_at,
-                    data.usage_limit,
-                    data.is_active,
-                ),
-            ).fetchone()
+                raise
             assert row is not None
             return _row_to_coupon(row)
 
@@ -100,16 +108,32 @@ class SupabaseCouponRepository(CouponRepository):
         sets.append("updated_at = now()")
         params = [*patch.values(), coupon_id]
         with self._pool.connection() as conn:
-            row = conn.execute(
-                f"UPDATE coupons SET {', '.join(sets)} WHERE id = %s RETURNING *;",
-                tuple(params),
-            ).fetchone()
+            try:
+                row = conn.execute(
+                    f"UPDATE coupons SET {', '.join(sets)} WHERE id = %s RETURNING *;",
+                    tuple(params),
+                ).fetchone()
+            except Exception as exc:
+                map_pg_conflict(
+                    exc,
+                    unique_message="A coupon with this code already exists",
+                    unique_code="DUPLICATE_COUPON",
+                )
+                raise
             return _row_to_coupon(row) if row else None
 
     def delete(self, coupon_id: str) -> bool:
         with self._pool.connection() as conn:
-            res = conn.execute("DELETE FROM coupons WHERE id = %s;", (coupon_id,))
-            return res.rowcount > 0
+            try:
+                res = conn.execute("DELETE FROM coupons WHERE id = %s;", (coupon_id,))
+                return res.rowcount > 0
+            except Exception as exc:
+                map_pg_conflict(
+                    exc,
+                    fk_message="Cannot delete coupon referenced by existing records",
+                    fk_code="COUPON_IN_USE",
+                )
+                raise
 
     def increment_usage_if_available(
         self, coupon_id: str, now_iso: str

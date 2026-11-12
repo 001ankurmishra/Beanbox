@@ -4,9 +4,9 @@
 -- recovery_codes, login_attempts, audit_logs + FK indexes + strict RLS.
 
 -- 1. Extend users table
-ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT false;
-ALTER TABLE users ADD COLUMN email_verified_at TIMESTAMPTZ;
-ALTER TABLE users ADD COLUMN totp_enabled BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN NOT NULL DEFAULT false;
 
 -- Pre-mark seeded demo accounts as email-verified so existing store flows work immediately
 UPDATE users

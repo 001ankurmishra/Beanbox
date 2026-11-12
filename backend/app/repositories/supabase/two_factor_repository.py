@@ -78,16 +78,36 @@ class SupabaseTwoFactorRepository(TwoFactorRepository):
             ).fetchone()
             return _row_to_totp(row) if row else None
 
-    def update_last_used_timestep(self, user_id: str, timestep: int) -> None:
+    def consume_totp_timestep(self, user_id: str, timestep: int) -> bool:
         with self._pool.connection() as conn:
-            conn.execute(
+            row = conn.execute(
                 """
                 UPDATE totp_secrets
                 SET last_used_timestep = %s, updated_at = now()
-                WHERE user_id = %s;
+                WHERE user_id = %s
+                  AND (last_used_timestep IS NULL OR last_used_timestep < %s)
+                RETURNING id;
                 """,
-                (timestep, user_id),
-            )
+                (timestep, user_id, timestep),
+            ).fetchone()
+            return row is not None
+
+    def consume_challenge_jti(self, jti: str, expires_at: str) -> bool:
+        with self._pool.connection() as conn:
+            with conn.transaction():
+                conn.execute(
+                    "DELETE FROM consumed_challenges WHERE expires_at <= now();"
+                )
+                row = conn.execute(
+                    """
+                    INSERT INTO consumed_challenges (jti, expires_at)
+                    VALUES (%s, %s::timestamptz)
+                    ON CONFLICT (jti) DO NOTHING
+                    RETURNING jti;
+                    """,
+                    (jti, expires_at),
+                ).fetchone()
+                return row is not None
 
     def disable_totp(self, user_id: str) -> None:
         with self._pool.connection() as conn:

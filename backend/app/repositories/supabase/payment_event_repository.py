@@ -21,6 +21,25 @@ class SupabasePaymentEventRepository(PaymentEventRepository):
             ).fetchone()
             return row is not None
 
+    def claim_event(
+        self,
+        event_id: str,
+        provider: Literal["stripe", "mock"],
+        event_type: str,
+        order_id: Optional[str] = None,
+    ) -> bool:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO payment_events (event_id, provider, event_type, order_id)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (event_id) DO NOTHING
+                RETURNING id;
+                """,
+                (event_id, provider, event_type, order_id),
+            ).fetchone()
+            return row is not None
+
     def record_event(
         self,
         event_id: str,
