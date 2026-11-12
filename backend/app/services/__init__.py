@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 from typing import Optional
 
+from app.cache.catalog_cache import InMemoryCatalogCache
+from app.cache.runtime import CacheRuntime
+from app.cache.session_cache import NoopSessionCache
 from app.config import Settings
 from app.repositories.interfaces import Repositories
 from app.services.address_service import AddressService
@@ -38,6 +41,7 @@ def create_services(
     email_service: Optional[EmailService] = None,
     payment_provider: Optional[PaymentProvider] = None,
     google_oauth_client: Optional[GoogleOAuthClient] = None,
+    cache_runtime: Optional[CacheRuntime] = None,
 ) -> Services:
     email = email_service or ConsoleEmailService(quiet=settings.app_env == "test")
     provider = payment_provider or create_payment_provider(settings)
@@ -45,6 +49,12 @@ def create_services(
     oauth_client = google_oauth_client or (
         HttpxGoogleOAuthClient(settings) if settings.google_oauth_enabled else None
     )
+    catalog_cache = (
+        cache_runtime.catalog_cache
+        if cache_runtime
+        else InMemoryCatalogCache(enabled=False)
+    )
+    session_cache = cache_runtime.session_cache if cache_runtime else NoopSessionCache()
 
     auth = AuthService(
         user_repo=repos.users,
@@ -56,8 +66,9 @@ def create_services(
         email_service=email,
         google_oauth_client=oauth_client,
         settings=settings,
+        session_cache=session_cache,
     )
-    products = ProductService(repos.products)
+    products = ProductService(repos.products, catalog_cache=catalog_cache)
     cart = CartService(repos.carts, repos.products)
     addresses = AddressService(repos.addresses)
     orders = OrderService(
@@ -71,6 +82,7 @@ def create_services(
         provider,
         email,
         settings,
+        catalog_cache=catalog_cache,
     )
     reviews = ReviewService(repos.reviews, repos.products, repos.orders, repos.users)
     wishlist = WishlistService(repos.wishlist, repos.products)
@@ -84,6 +96,8 @@ def create_services(
         provider,
         email,
         audit,
+        catalog_cache=catalog_cache,
+        session_cache=session_cache,
     )
 
     return Services(

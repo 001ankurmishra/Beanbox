@@ -65,6 +65,9 @@ class CartService:
         return self._cart_repo.upsert_for_session(owner.session_id, items)
 
     def hydrate(self, cart: Optional[Cart]) -> HydratedCart:
+        # IMPORTANT: Cart pricing and stock checks ALWAYS read directly from ProductRepository
+        # (the authoritative DB), NEVER from the Redis catalog cache, because stale cached prices
+        # or stock counts could misprice bags or let users add sold-out items to checkout.
         raw_items = cart.items if cart else []
         hydrated_items: list[HydratedCartItem] = []
         items_subtotal_paise = 0

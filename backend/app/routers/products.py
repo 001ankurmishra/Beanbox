@@ -1,6 +1,6 @@
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, Request
 
 from app.dependencies import AuthPrincipal, get_services, require_auth
 from app.models.domain import ProductCategory, RoastLevel
@@ -15,6 +15,7 @@ reviews_router = APIRouter(prefix="/api/reviews", tags=["Products & Reviews"])
 
 @products_router.get("")
 def list_products(
+    request: Request,
     search: Optional[str] = Query(default=None, max_length=100),
     category: Optional[ProductCategory] = Query(default=None),
     roast: Optional[RoastLevel] = Query(default=None),
@@ -43,16 +44,26 @@ def list_products(
         page=page,
         limit=limit,
     )
-    return make_success_response(services.product_service.list(query))
+    req_id = getattr(request.state, "request_id", "-")
+    data, cache_hit = services.product_service.list_with_cache(query, request_id=req_id)
+    res = make_success_response(data)
+    res.headers["X-Cache"] = "HIT" if cache_hit else "MISS"
+    return res
 
 
 @products_router.get("/{slug}")
 def product_detail(
+    request: Request,
     slug: str = Path(min_length=1, max_length=160, pattern=r"^[a-z0-9-]+$"),
     services: Services = Depends(get_services),
 ):
-    product = services.product_service.get_by_slug(slug)
-    return make_success_response({"product": product})
+    req_id = getattr(request.state, "request_id", "-")
+    product, cache_hit = services.product_service.get_by_slug_with_cache(
+        slug, request_id=req_id
+    )
+    res = make_success_response({"product": product})
+    res.headers["X-Cache"] = "HIT" if cache_hit else "MISS"
+    return res
 
 
 @products_router.get("/{slug}/related")

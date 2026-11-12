@@ -331,3 +331,18 @@ export interface AdminDashboardStats {
     variant: ProductVariant;
   }>;
 }
+
+export interface CacheStats {
+  enabled: boolean;
+  connected: boolean;
+  hits: number;
+  misses: number;
+  hitRatio: number;
+  rateLimitBlocks: number;
+  idempotentReplays: number;
+  memoryUsedBytes: number;
+  memoryUsedHuman: string;
+  totalKeys: number;
+  keysByDomain: Record<string, number>;
+  scanTruncated: boolean;
+}

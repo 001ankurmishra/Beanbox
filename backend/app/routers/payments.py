@@ -4,6 +4,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from app.cache.idempotency import execute_idempotent
 from app.config import Settings
 from app.dependencies import (
     AuthPrincipal,
@@ -26,14 +27,23 @@ router = APIRouter(prefix="/api/payments", tags=["Payments"])
 
 @router.post("/checkout-session")
 def create_checkout_session(
+    request: Request,
     body: CreatePaymentSessionRequest,
     principal: AuthPrincipal = Depends(require_verified),
     services: Services = Depends(get_services),
 ):
-    session = services.order_service.create_payment_session(
-        principal.id, body.order_id
+    return execute_idempotent(
+        request=request,
+        user_id=principal.id,
+        route_tag="payments:checkout-session",
+        body_payload=body,
+        action=lambda: {
+            "session": services.order_service.create_payment_session(
+                principal.id, body.order_id
+            )
+        },
+        success_status=201,
     )
-    return make_success_response({"session": session}, status_code=201)
 
 
 @router.post("/webhook")

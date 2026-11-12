@@ -207,6 +207,14 @@ class SupabaseSessionRepository(SessionRepository):
             ).fetchall()
             return [_row_to_session(r) for r in rows]
 
+    def list_ids_by_family(self, family_id: str) -> list[str]:
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT id FROM sessions WHERE family_id = %s;",
+                (family_id,),
+            ).fetchall()
+            return [str(r["id"]) for r in rows]
+
     def revoke_by_id(self, session_id: str, user_id: str) -> bool:
         with self._pool.connection() as conn:
             row = conn.execute(

@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, Request
 
+from app.cache.idempotency import execute_idempotent
 from app.dependencies import AuthPrincipal, get_services, require_auth, require_verified
 from app.schemas.order import (
     CancelOrderRequest,
@@ -29,16 +30,25 @@ def preview_checkout(
 
 @orders_router.post("")
 def create_order(
+    request: Request,
     body: CreateOrderRequest,
     principal: AuthPrincipal = Depends(require_verified),
     services: Services = Depends(get_services),
 ):
-    order = services.order_service.create_order(
+    return execute_idempotent(
+        request=request,
         user_id=principal.id,
-        address_id=body.address_id,
-        coupon_code=body.coupon_code,
+        route_tag="orders:create",
+        body_payload=body,
+        action=lambda: {
+            "order": services.order_service.create_order(
+                user_id=principal.id,
+                address_id=body.address_id,
+                coupon_code=body.coupon_code,
+            )
+        },
+        success_status=201,
     )
-    return make_success_response({"order": order}, status_code=201)
 
 
 @orders_router.get("")

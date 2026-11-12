@@ -3,12 +3,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import redis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.cache.runtime import create_cache_runtime
 from app.config import Settings, get_settings
 from app.middleware import (
-    InMemoryRateLimiter,
     SecurityAndLoggingMiddleware,
     register_exception_handlers,
 )
@@ -48,6 +49,7 @@ def create_app(
     email_service: Optional[EmailService] = None,
     payment_provider: Optional[PaymentProvider] = None,
     google_oauth_client: Optional[GoogleOAuthClient] = None,
+    redis_client: Optional[redis.Redis] = None,
 ) -> FastAPI:
     app_settings = settings or get_settings()
     is_test = app_settings.app_env == "test"
@@ -76,12 +78,15 @@ def create_app(
         else:
             app_repos = create_in_memory_repositories()
 
+    cache_runtime = create_cache_runtime(app_settings, redis_client=redis_client)
+
     app_services: Services = create_services(
         app_repos,
         app_settings,
         email_service=email_service,
         payment_provider=payment_provider,
         google_oauth_client=google_oauth_client,
+        cache_runtime=cache_runtime,
     )
 
     @asynccontextmanager
@@ -89,6 +94,7 @@ def create_app(
         yield
         if pg_pool is not None:
             pg_pool.close(timeout=2.0)
+        cache_runtime.close()
 
     app = FastAPI(
         title="BeanBox Coffee E-Commerce API",
@@ -108,28 +114,14 @@ def create_app(
     app.state.repos = app_repos
     app.state.services = app_services
     app.state.backend_type = backend_type
-
-    window = app_settings.rate_limit_window_seconds
-    app.state.limiters = {
-        "login": InMemoryRateLimiter(app_settings.rate_limit_login_max, window),
-        "signup": InMemoryRateLimiter(app_settings.rate_limit_signup_max, window),
-        "reset": InMemoryRateLimiter(app_settings.rate_limit_reset_max, window),
-        "verify_resend": InMemoryRateLimiter(
-            app_settings.rate_limit_verify_resend_max, window
-        ),
-        "refresh": InMemoryRateLimiter(app_settings.rate_limit_refresh_max, window),
-        "2fa": InMemoryRateLimiter(app_settings.rate_limit_2fa_max, window),
-    }
-
-    general_limiter = InMemoryRateLimiter(
-        max_requests=5000 if is_test else 240,
-        window_seconds=60,
-    )
+    app.state.cache = cache_runtime
 
     app.add_middleware(
         SecurityAndLoggingMiddleware,
-        general_limiter=general_limiter,
+        general_limiter=cache_runtime.rate_limiter,
         settings=app_settings,
+        general_limit=5000 if is_test else 240,
+        general_window_seconds=60,
         is_test=is_test,
     )
     app.add_middleware(
@@ -140,11 +132,21 @@ def create_app(
         allow_headers=[
             "Authorization",
             "Content-Type",
+            "Idempotency-Key",
             "X-CSRF-Token",
             "X-Request-Id",
             "X-Guest-Session-Id",
         ],
-        expose_headers=["X-CSRF-Token", "X-Request-Id"],
+        expose_headers=[
+            "X-CSRF-Token",
+            "X-Request-Id",
+            "X-Cache",
+            "Idempotent-Replay",
+            "X-RateLimit-Limit",
+            "X-RateLimit-Remaining",
+            "X-RateLimit-Reset",
+            "Retry-After",
+        ],
     )
 
     register_exception_handlers(app, is_test=is_test)
@@ -157,6 +159,7 @@ def create_app(
                 "service": "beanbox-fastapi",
                 "repositoryBackend": backend_type,
                 "paymentProvider": app_services.payment_provider.name,
+                "redis": cache_runtime.health(),
                 "timestamp": datetime.now(timezone.utc)
                 .isoformat()
                 .replace("+00:00", "Z"),

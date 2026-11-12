@@ -8,12 +8,14 @@ class AppError(Exception):
         code: str,
         message: str,
         details: Optional[Any] = None,
+        headers: Optional[dict[str, str]] = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
         self.details = details
+        self.headers = headers
 
 
 class BadRequestError(AppError):
@@ -77,5 +79,6 @@ class TooManyRequestsError(AppError):
         self,
         message: str = "Too many requests, please try again later",
         code: str = "RATE_LIMIT_EXCEEDED",
+        headers: Optional[dict[str, str]] = None,
     ) -> None:
-        super().__init__(429, code, message)
+        super().__init__(429, code, message, headers=headers)

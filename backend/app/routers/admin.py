@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, Request
 
 from app.dependencies import (
     AuthPrincipal,
@@ -232,3 +232,8 @@ def admin_list_audit_logs(
             page=page, limit=limit, event_type=event_type, user_id=user_id
         )
     )
+
+
+@router.get("/cache-stats")
+def admin_cache_stats(request: Request):
+    return make_success_response({"stats": request.app.state.cache.collect_admin_stats()})

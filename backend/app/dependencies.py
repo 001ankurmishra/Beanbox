@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Optional
@@ -7,6 +9,7 @@ from uuid import uuid4
 
 from fastapi import Depends, Request
 
+from app.cache.keys import SESSION_ACTIVE_TTL_SECONDS
 from app.config import Settings
 from app.models.domain import UserRole
 from app.services import Services
@@ -17,6 +20,8 @@ from app.utils.errors import (
     UnauthorizedError,
 )
 from app.utils.security import extract_client_ip, extract_user_agent
+
+logger = logging.getLogger("beanbox.auth")
 
 ACCESS_COOKIE_NAME = "beanbox_access"
 REFRESH_COOKIE_NAME = "beanbox_refresh"
@@ -111,27 +116,31 @@ def require_user(
         raise UnauthorizedError("Authentication required")
 
     claims = services.auth_service.verify_access_token(token)
-    session = request.app.state.repos.sessions.find_by_id(claims.session_id)
-    if (
-        not session
-        or session.user_id != claims.user_id
-        or session.revoked_at is not None
-        or _is_iso_expired(session.expires_at)
-    ):
-        raise UnauthorizedError(
-            "Session has been revoked or expired", code="SESSION_REVOKED"
-        )
+    session_cache = request.app.state.cache.session_cache
+    cached_active = session_cache.is_active(claims.session_id)
+
+    if cached_active is not True:
+        session = request.app.state.repos.sessions.find_by_id(claims.session_id)
+        if (
+            not session
+            or session.user_id != claims.user_id
+            or session.revoked_at is not None
+            or _is_iso_expired(session.expires_at)
+        ):
+            raise UnauthorizedError(
+                "Session has been revoked or expired", code="SESSION_REVOKED"
+            )
+        session_cache.mark_active(session.id, SESSION_ACTIVE_TTL_SECONDS)
+        _touch_session_if_stale(request, session.id, session.last_used_at)
 
     user = request.app.state.repos.users.find_by_id(claims.user_id)
     if not user:
         raise UnauthorizedError("User session no longer valid")
 
-    _touch_session_if_stale(request, session.id, session.last_used_at)
-
     return AuthPrincipal(
         id=user.id,
         role=user.role,
-        sid=session.id,
+        sid=claims.session_id,
         jti=claims.jti,
         email=user.email,
         email_verified=user.email_verified,
@@ -199,15 +208,46 @@ def get_guest_session_id(request: Request) -> Optional[str]:
     return None
 
 
+_BUCKET_SETTING_ATTR = {
+    "login": "rate_limit_login_max",
+    "signup": "rate_limit_signup_max",
+    "reset": "rate_limit_reset_max",
+    "verify_resend": "rate_limit_verify_resend_max",
+    "refresh": "rate_limit_refresh_max",
+    "2fa": "rate_limit_2fa_max",
+}
+
+
 def _rate_limit_bucket(bucket: str, message: str) -> Callable[[Request], None]:
     def _dep(request: Request) -> None:
         settings: Settings = request.app.state.settings
-        limiter = request.app.state.limiters[bucket]
+        limiter = request.app.state.cache.rate_limiter
+        limit = int(getattr(settings, _BUCKET_SETTING_ATTR[bucket]))
+        window = settings.rate_limit_window_seconds
         client_ip = extract_client_ip(request, settings)
-        if not limiter.allow(f"{bucket}:{client_ip}"):
+        allowed, remaining, reset_at = limiter.check(
+            f"{bucket}:{client_ip}", limit, window
+        )
+        rl_headers = {
+            "X-RateLimit-Limit": str(limit),
+            "X-RateLimit-Remaining": str(remaining),
+            "X-RateLimit-Reset": str(reset_at),
+        }
+        request.state.rate_limit_headers = rl_headers
+        if not allowed:
+            req_id = getattr(request.state, "request_id", "-")
+            retry_after = str(max(1, reset_at - int(time.time())))
+            logger.warning(
+                "ratelimit=BLOCK bucket=%s ip=%s path=%s req=%s",
+                bucket,
+                client_ip,
+                request.url.path,
+                req_id,
+            )
             raise TooManyRequestsError(
                 message,
                 code="AUTH_RATE_LIMIT_EXCEEDED",
+                headers={**rl_headers, "Retry-After": retry_after},
             )
 
     return _dep

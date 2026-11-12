@@ -3,6 +3,7 @@ import {
   AdminDashboardStats,
   AuditLogEntry,
   AuthProvidersResponse,
+  CacheStats,
   CheckoutPreview,
   Coupon,
   HydratedCart,
@@ -211,9 +212,13 @@ export const ordersApi = {
       method: 'POST',
       body: JSON.stringify(body)
     }),
-  create: (body: { addressId: string; couponCode?: string }) =>
+  create: (
+    body: { addressId: string; couponCode?: string },
+    idempotencyKey?: string
+  ) =>
     apiFetch<{ order: Order }>('/orders', {
       method: 'POST',
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
       body: JSON.stringify(body)
     }),
   list: (page = 1, limit = 10) =>
@@ -231,7 +236,7 @@ export const ordersApi = {
 };
 
 export const paymentsApi = {
-  createSession: (orderId: string) =>
+  createSession: (orderId: string, idempotencyKey?: string) =>
     apiFetch<{
       session: {
         provider: 'stripe' | 'mock';
@@ -240,6 +245,7 @@ export const paymentsApi = {
       };
     }>('/payments/checkout-session', {
       method: 'POST',
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
       body: JSON.stringify({ orderId })
     }),
   triggerMock: (orderId: string, outcome: 'success' | 'failed' | 'expired') =>
@@ -387,5 +393,6 @@ export const adminApi = {
     apiFetch<{ items: AuditLogEntry[]; pagination: PaginationMeta }>(
       '/admin/audit-logs',
       { params }
-    )
+    ),
+  cacheStats: () => apiFetch<{ stats: CacheStats }>('/admin/cache-stats')
 };

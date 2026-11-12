@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -47,6 +47,15 @@ export default function CheckoutPage() {
   const [stateName, setStateName] = useState('');
   const [postalCode, setPostalCode] = useState('');
   const [savingAddr, setSavingAddr] = useState(false);
+
+  // Reuse one UUID idempotency key per checkout attempt across retries
+  const orderIdempotencyKeyRef = useRef<string | null>(null);
+  const paymentIdempotencyKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    orderIdempotencyKeyRef.current = null;
+    paymentIdempotencyKeyRef.current = null;
+  }, [selectedAddressId, appliedCoupon, cart.items]);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -158,12 +167,24 @@ export default function CheckoutPage() {
       return;
     }
     setSubmitting(true);
+    if (!orderIdempotencyKeyRef.current) {
+      orderIdempotencyKeyRef.current = crypto.randomUUID();
+    }
+    if (!paymentIdempotencyKeyRef.current) {
+      paymentIdempotencyKeyRef.current = crypto.randomUUID();
+    }
     try {
-      const { order } = await ordersApi.create({
-        addressId: selectedAddressId,
-        couponCode: appliedCoupon
-      });
-      const { session } = await paymentsApi.createSession(order.id);
+      const { order } = await ordersApi.create(
+        {
+          addressId: selectedAddressId,
+          couponCode: appliedCoupon
+        },
+        orderIdempotencyKeyRef.current
+      );
+      const { session } = await paymentsApi.createSession(
+        order.id,
+        paymentIdempotencyKeyRef.current
+      );
       await refreshCart();
 
       if (session.provider === 'mock') {

@@ -162,6 +162,10 @@ class InMemorySessionRepository(SessionRepository):
             active.sort(key=lambda x: x.last_used_at, reverse=True)
             return active
 
+    def list_ids_by_family(self, family_id: str) -> list[str]:
+        with self._lock:
+            return [s.id for s in self._sessions if s.family_id == family_id]
+
     def revoke_by_id(self, session_id: str, user_id: str) -> bool:
         with self._lock:
             for s in self._sessions:

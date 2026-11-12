@@ -3,6 +3,8 @@ import secrets
 from datetime import datetime, timezone
 from typing import Optional
 
+from app.cache.catalog_cache import InMemoryCatalogCache
+from app.cache.interfaces import CatalogCache
 from app.config import Settings
 from app.models.domain import (
     CamelModel,
@@ -110,6 +112,7 @@ class OrderService:
         payment_provider: PaymentProvider,
         email_service: EmailService,
         settings: Settings,
+        catalog_cache: Optional[CatalogCache] = None,
     ) -> None:
         self._order_repo = order_repo
         self._cart_repo = cart_repo
@@ -121,10 +124,16 @@ class OrderService:
         self._payment_provider = payment_provider
         self._email_service = email_service
         self._settings = settings
+        self._catalog_cache: CatalogCache = catalog_cache or InMemoryCatalogCache(
+            enabled=False
+        )
 
     def _resolve_cart_order_items(
         self, user_id: str
     ) -> tuple[list[OrderItem], int]:
+        # IMPORTANT: Checkout and order creation ALWAYS read live product prices,
+        # active status, and inventory directly from Postgres / ProductRepository,
+        # NEVER from the catalog cache, so price changes and stock limits are exact.
         cart = self._cart_repo.find_by_user_id(user_id)
         if not cart or not cart.items:
             raise BadRequestError("Your cart is empty", code="EMPTY_CART")
@@ -267,6 +276,7 @@ class OrderService:
             )
         )
         self._cart_repo.clear_for_user(user_id)
+        self._catalog_cache.invalidate_catalog("order_created")
         return order
 
     def create_payment_session(self, user_id: str, order_id: str):
@@ -311,6 +321,7 @@ class OrderService:
                     for item in order.items
                 ]
             )
+            self._catalog_cache.invalidate_catalog("admin_order_stock_released")
         if order.coupon_id:
             self._coupon_repo.decrement_usage(order.coupon_id)
 
@@ -443,6 +454,7 @@ class OrderService:
         )
         if order.coupon_id:
             self._coupon_repo.decrement_usage(order.coupon_id)
+        self._catalog_cache.invalidate_catalog("stock_released")
 
     def list_user_orders(self, user_id: str, page: int, limit: int) -> dict:
         items, total = self._order_repo.list_by_user_id(user_id, page, limit)

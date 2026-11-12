@@ -4,6 +4,7 @@ import React, { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
+  Activity,
   Boxes,
   Coffee,
   FileSearch,
@@ -20,7 +21,8 @@ const ADMIN_LINKS = [
   { href: '/admin/orders', label: 'Orders', icon: PackageCheck },
   { href: '/admin/inventory', label: 'Inventory', icon: Boxes },
   { href: '/admin/coupons', label: 'Coupons', icon: Ticket },
-  { href: '/admin/audit-logs', label: 'Audit Logs', icon: FileSearch }
+  { href: '/admin/audit-logs', label: 'Audit Logs', icon: FileSearch },
+  { href: '/admin/cache', label: 'Cache & Redis', icon: Activity }
 ];
 
 export default function AdminLayout({

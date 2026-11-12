@@ -20,12 +20,14 @@ dependencies = [
   "python-multipart>=0.0.12",
   "psycopg[binary]>=3.2.0",
   "psycopg-pool>=3.2.0",
+  "redis>=5.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3.0",
   "ruff>=0.7.0",
+  "fakeredis[lua]>=2.25.0",
 ]
 
 [tool.pytest.ini_options]
@@ -33,6 +35,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
   "pg: tests requiring an isolated local Postgres instance via DATABASE_URL_TEST (never production Supabase)",
+  "redis: tests requiring a real Redis instance via REDIS_URL_TEST",
 ]
 
 [tool.ruff]

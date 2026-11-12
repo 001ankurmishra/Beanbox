@@ -65,6 +65,9 @@ class SessionRepository(ABC):
     def list_active_for_user(self, user_id: str) -> list[Session]: ...
 
     @abstractmethod
+    def list_ids_by_family(self, family_id: str) -> list[str]: ...
+
+    @abstractmethod
     def revoke_by_id(self, session_id: str, user_id: str) -> bool: ...
 
     @abstractmethod

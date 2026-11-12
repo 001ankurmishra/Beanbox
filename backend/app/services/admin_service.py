@@ -2,6 +2,9 @@ import math
 from datetime import datetime, timezone
 from typing import Optional
 
+from app.cache.catalog_cache import InMemoryCatalogCache
+from app.cache.interfaces import CatalogCache, SessionCache
+from app.cache.session_cache import NoopSessionCache
 from app.models.domain import (
     CamelModel,
     Coupon,
@@ -78,6 +81,8 @@ class AdminService:
         payment_provider: PaymentProvider,
         email_service: EmailService,
         audit_service: AuditService,
+        catalog_cache: Optional[CatalogCache] = None,
+        session_cache: Optional[SessionCache] = None,
     ) -> None:
         self._product_repo = product_repo
         self._order_repo = order_repo
@@ -88,6 +93,10 @@ class AdminService:
         self._payment_provider = payment_provider
         self._email_service = email_service
         self._audit = audit_service
+        self._catalog_cache: CatalogCache = catalog_cache or InMemoryCatalogCache(
+            enabled=False
+        )
+        self._session_cache: SessionCache = session_cache or NoopSessionCache()
 
     def get_dashboard_stats(self) -> AdminDashboardStats:
         order_stats = self._order_repo.get_dashboard_stats()
@@ -134,7 +143,9 @@ class AdminService:
     def create_product(self, data: CreateProductInput) -> Product:
         if self._product_repo.find_by_slug(data.slug):
             raise ConflictError("A product with this slug already exists")
-        return self._product_repo.create(data)
+        created = self._product_repo.create(data)
+        self._catalog_cache.invalidate_catalog("product_created")
+        return created
 
     def update_product(self, product_id: str, data: UpdateProductInput) -> Product:
         if data.slug:
@@ -144,11 +155,13 @@ class AdminService:
         updated = self._product_repo.update(product_id, data)
         if not updated:
             raise NotFoundError("Product not found")
+        self._catalog_cache.invalidate_catalog("product_updated")
         return updated
 
     def delete_product(self, product_id: str) -> None:
         if not self._product_repo.delete(product_id):
             raise NotFoundError("Product not found")
+        self._catalog_cache.invalidate_catalog("product_deleted")
 
     def update_inventory(
         self,
@@ -162,6 +175,7 @@ class AdminService:
         )
         if not variant:
             raise NotFoundError("Product or variant not found")
+        self._catalog_cache.invalidate_catalog("inventory_updated")
         return variant
 
     def list_orders(
@@ -318,7 +332,9 @@ class AdminService:
             )
         if outcome == "not_found" or not updated:
             raise NotFoundError("User not found")
+        active_sids = [s.id for s in self._session_repo.list_active_for_user(user.id)]
         revoked = self._session_repo.revoke_all_for_user(user.id)
+        self._session_cache.invalidate(active_sids)
         self._audit.record(
             event_type="role_changed",
             outcome="success",

@@ -1,8 +1,6 @@
 import logging
 import secrets
 import time
-from collections import deque
-from threading import RLock
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -10,6 +8,8 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
+from app.cache.interfaces import RateLimiter
+from app.cache.rate_limiter import InMemoryRateLimiter  # noqa: F401
 from app.config import Settings
 from app.utils.response import make_error_payload
 from app.utils.security import extract_client_ip
@@ -25,28 +25,6 @@ def _normalize_origin(raw: str) -> str:
     if not parsed.scheme or not parsed.netloc:
         return ""
     return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
-
-
-class InMemoryRateLimiter:
-    """Thread-safe sliding window rate limiter keyed by client IP and bucket."""
-
-    def __init__(self, max_requests: int, window_seconds: int) -> None:
-        self._max_requests = max_requests
-        self._window_seconds = window_seconds
-        self._lock = RLock()
-        self._buckets: dict[str, deque[float]] = {}
-
-    def allow(self, key: str) -> bool:
-        now = time.monotonic()
-        cutoff = now - self._window_seconds
-        with self._lock:
-            dq = self._buckets.setdefault(key, deque())
-            while dq and dq[0] <= cutoff:
-                dq.popleft()
-            if len(dq) >= self._max_requests:
-                return False
-            dq.append(now)
-            return True
 
 
 def _validate_cookie_csrf(
@@ -142,13 +120,17 @@ class SecurityAndLoggingMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
         app,
-        general_limiter: InMemoryRateLimiter,
+        general_limiter: RateLimiter,
         settings: Settings,
+        general_limit: int = 240,
+        general_window_seconds: int = 60,
         is_test: bool = False,
     ) -> None:
         super().__init__(app)
         self._general_limiter = general_limiter
         self._settings = settings
+        self._general_limit = general_limit
+        self._general_window_seconds = general_window_seconds
         self._is_test = is_test
 
     async def dispatch(
@@ -158,18 +140,39 @@ class SecurityAndLoggingMiddleware(BaseHTTPMiddleware):
         request.state.request_id = request_id
 
         client_ip = extract_client_ip(request, self._settings)
-        if request.url.path.startswith("/api") and not self._general_limiter.allow(
-            f"general:{client_ip}"
-        ):
-            return JSONResponse(
-                status_code=429,
-                content=make_error_payload(
-                    "RATE_LIMIT_EXCEEDED",
-                    "Too many requests. Please slow down and try again shortly.",
-                    request_id=request_id,
-                ),
-                headers={"X-Request-Id": request_id, "Retry-After": "60"},
+        general_headers: dict[str, str] = {}
+        if request.url.path.startswith("/api"):
+            allowed, remaining, reset_at = self._general_limiter.check(
+                f"general:{client_ip}",
+                self._general_limit,
+                self._general_window_seconds,
             )
+            general_headers = {
+                "X-RateLimit-Limit": str(self._general_limit),
+                "X-RateLimit-Remaining": str(remaining),
+                "X-RateLimit-Reset": str(reset_at),
+            }
+            if not allowed:
+                retry_after = str(max(1, reset_at - int(time.time())))
+                logger.warning(
+                    "ratelimit=BLOCK bucket=general ip=%s path=%s req=%s",
+                    client_ip,
+                    request.url.path,
+                    request_id,
+                )
+                return JSONResponse(
+                    status_code=429,
+                    content=make_error_payload(
+                        "RATE_LIMIT_EXCEEDED",
+                        "Too many requests. Please slow down and try again shortly.",
+                        request_id=request_id,
+                    ),
+                    headers={
+                        "X-Request-Id": request_id,
+                        **general_headers,
+                        "Retry-After": retry_after,
+                    },
+                )
 
         csrf_failure = _validate_cookie_csrf(request, self._settings, request_id)
         if csrf_failure is not None:
@@ -178,6 +181,12 @@ class SecurityAndLoggingMiddleware(BaseHTTPMiddleware):
         started = time.perf_counter()
         response = await call_next(request)
         duration_ms = (time.perf_counter() - started) * 1000.0
+
+        # Apply endpoint-specific rate-limit headers if set (e.g. /auth/login), else general
+        endpoint_rl = getattr(request.state, "rate_limit_headers", None)
+        for hk, hv in (endpoint_rl or general_headers).items():
+            if hk not in response.headers:
+                response.headers[hk] = hv
 
         response.headers["X-Request-Id"] = request_id
         response.headers["X-Content-Type-Options"] = "nosniff"

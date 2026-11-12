@@ -85,6 +85,17 @@ class Settings(BaseSettings):
     supabase_service_role_key: str = Field(default="", alias="SUPABASE_SERVICE_ROLE_KEY")
     database_url: str = Field(default="", alias="DATABASE_URL")
 
+    # Redis cache, rate-limiting, session cache & idempotency configuration
+    redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
+    redis_enabled: Literal["auto", "true", "false"] = Field(
+        default="auto", alias="REDIS_ENABLED"
+    )
+    redis_url_test: str = Field(default="", alias="REDIS_URL_TEST")
+
+    @property
+    def key_prefix(self) -> str:
+        return f"beanbox:{self.app_env}:"
+
     @property
     def google_oauth_enabled(self) -> bool:
         return bool(self.google_client_id.strip() and self.google_client_secret.strip())

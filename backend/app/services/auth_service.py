@@ -10,6 +10,8 @@ from uuid import uuid4
 import jwt
 import pyotp
 
+from app.cache.interfaces import SessionCache
+from app.cache.session_cache import NoopSessionCache
 from app.config import Settings
 from app.models.domain import PublicSession, PublicUser, User, UserRole
 from app.repositories.interfaces import (
@@ -125,6 +127,7 @@ class AuthService:
         email_service: EmailService,
         google_oauth_client: Optional[GoogleOAuthClient],
         settings: Settings,
+        session_cache: Optional[SessionCache] = None,
     ) -> None:
         self._user_repo = user_repo
         self._session_repo = session_repo
@@ -135,6 +138,33 @@ class AuthService:
         self._email_service = email_service
         self._google_oauth = google_oauth_client
         self._settings = settings
+        self._session_cache: SessionCache = session_cache or NoopSessionCache()
+
+    def _revoke_session_by_id(self, session_id: str, user_id: str) -> bool:
+        revoked = self._session_repo.revoke_by_id(session_id, user_id)
+        if revoked:
+            self._session_cache.invalidate([session_id])
+        return revoked
+
+    def _revoke_family(self, family_id: str) -> int:
+        family_sids = self._session_repo.list_ids_by_family(family_id)
+        count = self._session_repo.revoke_family(family_id)
+        self._session_cache.invalidate(family_sids)
+        return count
+
+    def _revoke_all_for_user(
+        self, user_id: str, except_session_id: Optional[str] = None
+    ) -> int:
+        active_sids = [
+            s.id
+            for s in self._session_repo.list_active_for_user(user_id)
+            if except_session_id is None or s.id != except_session_id
+        ]
+        count = self._session_repo.revoke_all_for_user(
+            user_id, except_session_id=except_session_id
+        )
+        self._session_cache.invalidate(active_sids)
+        return count
 
     def sign_access_token(self, user: User, session_id: str) -> str:
         now = _now()
@@ -433,7 +463,7 @@ class AuthService:
             grace_sess = self._session_repo.find_by_grace_refresh_hash(token_hash)
             if grace_sess:
                 if grace_sess.revoked_at is not None:
-                    self._session_repo.revoke_family(grace_sess.family_id)
+                    self._revoke_family(grace_sess.family_id)
                     self._audit.record(
                         event_type="refresh_reuse_detected",
                         outcome="warning",
@@ -483,7 +513,7 @@ class AuthService:
                 token_hash
             )
             if reused:
-                revoked_count = self._session_repo.revoke_family(reused.family_id)
+                revoked_count = self._revoke_family(reused.family_id)
                 self._audit.record(
                     event_type="refresh_reuse_detected",
                     outcome="warning",
@@ -509,7 +539,7 @@ class AuthService:
             )
 
         if session.revoked_at is not None:
-            self._session_repo.revoke_family(session.family_id)
+            self._revoke_family(session.family_id)
             self._audit.record(
                 event_type="refresh_reuse_detected",
                 outcome="warning",
@@ -575,7 +605,7 @@ class AuthService:
                     access_token=access_token,
                     refresh_token=None,
                 )
-            self._session_repo.revoke_family(session.family_id)
+            self._revoke_family(session.family_id)
             self._audit.record(
                 event_type="refresh_reuse_detected",
                 outcome="warning",
@@ -614,7 +644,7 @@ class AuthService:
                 resolved_uid = sess.user_id
 
         if resolved_sid and resolved_uid:
-            self._session_repo.revoke_by_id(resolved_sid, resolved_uid)
+            self._revoke_session_by_id(resolved_sid, resolved_uid)
             self._audit.record(
                 event_type="logout",
                 outcome="success",
@@ -624,7 +654,7 @@ class AuthService:
             )
 
     def logout_all(self, user_id: str, ctx: Optional[RequestContext] = None) -> int:
-        count = self._session_repo.revoke_all_for_user(user_id)
+        count = self._revoke_all_for_user(user_id)
         self._audit.record(
             event_type="logout_all",
             outcome="success",
@@ -657,7 +687,7 @@ class AuthService:
         target_session_id: str,
         ctx: Optional[RequestContext] = None,
     ) -> None:
-        revoked = self._session_repo.revoke_by_id(target_session_id, user_id)
+        revoked = self._revoke_session_by_id(target_session_id, user_id)
         if not revoked:
             raise NotFoundError("Session not found")
         self._audit.record(
@@ -720,7 +750,7 @@ class AuthService:
         validate_password_policy(new_password, user.email)
         new_hash = hash_password_argon2(new_password)
         self._user_repo.update(user.id, UpdateUserInput(password_hash=new_hash))
-        revoked_others = self._session_repo.revoke_all_for_user(
+        revoked_others = self._revoke_all_for_user(
             user.id, except_session_id=current_session_id
         )
         req_ctx = ctx or RequestContext()
@@ -878,7 +908,7 @@ class AuthService:
             raise NotFoundError("User not found")
 
         self._user_repo.mark_password_reset_token_used(record.id)
-        revoked_count = self._session_repo.revoke_all_for_user(record.user_id)
+        revoked_count = self._revoke_all_for_user(record.user_id)
         self._login_attempt_repo.reset(f"acct:{user.email.lower()}")
         req_ctx = ctx or RequestContext()
         self._email_service.send_password_changed_notification(
@@ -1339,7 +1369,7 @@ class AuthService:
                         or user
                     )
                     self._user_repo.delete_unused_tokens_for_user(user.id)
-                    revoked_unverified = self._session_repo.revoke_all_for_user(user.id)
+                    revoked_unverified = self._revoke_all_for_user(user.id)
                 self._oauth_repo.create(
                     CreateOAuthAccountInput(
                         user_id=user.id,
