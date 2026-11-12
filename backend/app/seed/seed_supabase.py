@@ -22,8 +22,11 @@ def seed_supabase_database(database_url: str, apply_schema: bool = False) -> dic
             for u in dataset.users:
                 conn.execute(
                     """
-                    INSERT INTO users (id, name, email, phone, password_hash, role, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO users (
+                        id, name, email, phone, password_hash, role,
+                        email_verified, email_verified_at, totp_enabled, created_at, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (email) DO NOTHING;
                     """,
                     (
@@ -33,6 +36,9 @@ def seed_supabase_database(database_url: str, apply_schema: bool = False) -> dic
                         u.phone,
                         u.password_hash,
                         u.role,
+                        u.email_verified,
+                        u.email_verified_at,
+                        u.totp_enabled,
                         u.created_at,
                         u.updated_at,
                     ),

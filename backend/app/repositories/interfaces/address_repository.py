@@ -37,6 +37,11 @@ class AddressRepository(ABC):
     def find_by_id(self, address_id: str) -> Optional[Address]: ...
 
     @abstractmethod
+    def find_by_id_for_user(
+        self, address_id: str, user_id: str
+    ) -> Optional[Address]: ...
+
+    @abstractmethod
     def create(self, data: CreateAddressInput) -> Address: ...
 
     @abstractmethod

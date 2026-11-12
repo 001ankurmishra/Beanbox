@@ -63,6 +63,11 @@ class OrderRepository(ABC):
     def find_by_id(self, order_id: str) -> Optional[Order]: ...
 
     @abstractmethod
+    def find_by_id_for_user(
+        self, order_id: str, user_id: str
+    ) -> Optional[Order]: ...
+
+    @abstractmethod
     def find_by_order_number(self, order_number: str) -> Optional[Order]: ...
 
     @abstractmethod

@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from tests.conftest import create_test_app, login_client, new_client
+from tests.conftest import create_test_app, login_client, signup_verified_client
 
 
 def test_coupon_discount_gst_and_shipping_calculations():
@@ -80,14 +80,11 @@ def test_coupon_usage_limit_and_rollback_on_cancel():
     )
     assert ord1.status_code == 201
 
-    user2 = new_client(app)
-    user2.post(
-        "/api/auth/signup",
-        json={
-            "name": "Neha Rao",
-            "email": "neha@example.in",
-            "password": "Password@123",
-        },
+    user2 = signup_verified_client(
+        app,
+        name="Neha Rao",
+        email="neha@example.in",
+        password="Password@123",
     )
     addr2_id = user2.post(
         "/api/addresses",

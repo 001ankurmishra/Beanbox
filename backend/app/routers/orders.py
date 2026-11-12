@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Path, Query
 
-from app.dependencies import AuthPrincipal, get_services, require_auth
+from app.dependencies import AuthPrincipal, get_services, require_auth, require_verified
 from app.schemas.order import (
     CancelOrderRequest,
     CheckoutPreviewRequest,
@@ -30,7 +30,7 @@ def preview_checkout(
 @orders_router.post("")
 def create_order(
     body: CreateOrderRequest,
-    principal: AuthPrincipal = Depends(require_auth),
+    principal: AuthPrincipal = Depends(require_verified),
     services: Services = Depends(get_services),
 ):
     order = services.order_service.create_order(

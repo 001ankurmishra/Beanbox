@@ -2,7 +2,12 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Path, Query
 
-from app.dependencies import get_services, require_admin
+from app.dependencies import (
+    AuthPrincipal,
+    get_request_context,
+    get_services,
+    require_admin,
+)
 from app.models.domain import OrderStatus
 from app.repositories.interfaces import (
     CreateCouponInput,
@@ -18,8 +23,10 @@ from app.schemas.admin import (
     AdminUpdateCouponRequest,
     AdminUpdateOrderStatusRequest,
     AdminUpdateProductRequest,
+    AdminUpdateUserRoleRequest,
 )
 from app.services import Services
+from app.services.audit_service import RequestContext
 from app.utils.response import make_success_response
 
 router = APIRouter(
@@ -192,4 +199,36 @@ def admin_list_users(
 ):
     return make_success_response(
         services.admin_service.list_users(page=page, limit=limit)
+    )
+
+
+@router.patch("/users/{user_id}/role")
+def admin_update_user_role(
+    body: AdminUpdateUserRoleRequest,
+    user_id: str = Path(min_length=1, max_length=120),
+    principal: AuthPrincipal = Depends(require_admin),
+    ctx: RequestContext = Depends(get_request_context),
+    services: Services = Depends(get_services),
+):
+    updated = services.admin_service.update_user_role(
+        target_user_id=user_id,
+        next_role=body.role,
+        actor_user_id=principal.id,
+        ctx=ctx,
+    )
+    return make_success_response({"user": updated})
+
+
+@router.get("/audit-logs")
+def admin_list_audit_logs(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=25, ge=1, le=100),
+    event_type: Optional[str] = Query(default=None, alias="eventType", max_length=80),
+    user_id: Optional[str] = Query(default=None, alias="userId", max_length=120),
+    services: Services = Depends(get_services),
+):
+    return make_success_response(
+        services.admin_service.list_audit_logs(
+            page=page, limit=limit, event_type=event_type, user_id=user_id
+        )
     )

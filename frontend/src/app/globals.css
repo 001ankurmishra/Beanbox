@@ -52,3 +52,13 @@ dialog::backdrop {
   inset-block-start: 0;
   z-index: 1;
 }
+
+/* Defer validation feedback until after interaction (validate-input-after-interaction) */
+input.auth-field:user-invalid {
+  border-color: #be123c;
+  background-color: #fff1f2;
+}
+
+input.auth-field:user-valid {
+  border-color: #15803d;
+}

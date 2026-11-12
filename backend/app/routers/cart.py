@@ -15,6 +15,7 @@ from app.dependencies import (
 from app.schemas.cart import AddToCartRequest, UpdateCartItemRequest
 from app.services import Services
 from app.services.cart_service import CartOwner
+from app.utils.errors import NotFoundError
 from app.utils.response import make_success_response
 
 router = APIRouter(prefix="/api/cart", tags=["Cart"])
@@ -103,14 +104,12 @@ def remove_item(
     user: Optional[AuthPrincipal] = Depends(get_optional_user),
     guest_session_id: Optional[str] = Depends(get_guest_session_id),
     services: Services = Depends(get_services),
-    settings: Settings = Depends(get_app_settings),
 ):
-    owner, new_session = _resolve_owner(user, guest_session_id, True)
-    assert owner is not None
+    owner, _ = _resolve_owner(user, guest_session_id, False)
+    if not owner:
+        raise NotFoundError("Cart item not found")
     cart = services.cart_service.remove_item(owner, variant_id)
-    resp = make_success_response({"cart": cart})
-    _attach_guest_cookie(resp, new_session, settings)
-    return resp
+    return make_success_response({"cart": cart})
 
 
 @router.delete("")

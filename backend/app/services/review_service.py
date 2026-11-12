@@ -88,13 +88,21 @@ class ReviewService:
         return review
 
     def delete_review(self, review_id: str, user_id: str, is_admin: bool) -> None:
-        review = self._review_repo.find_by_id(review_id)
-        if not review:
+        review = (
+            self._review_repo.find_by_id(review_id)
+            if is_admin
+            else self._review_repo.find_by_id_for_user(review_id, user_id)
+        )
+        if not review or (not is_admin and review.user_id != user_id):
             raise NotFoundError("Review not found")
-        if not is_admin and review.user_id != user_id:
-            raise ForbiddenError("You can only delete your own reviews")
 
-        self._review_repo.delete(review.id)
+        deleted = (
+            self._review_repo.delete(review.id)
+            if is_admin
+            else self._review_repo.delete_for_user(review.id, user_id)
+        )
+        if not deleted:
+            raise NotFoundError("Review not found")
         stats = self._review_repo.get_stats_for_product(review.product_id)
         self._product_repo.update_rating_stats(
             review.product_id, stats.average, stats.count

@@ -37,7 +37,6 @@ from app.services.pricing_service import (
 from app.utils.errors import (
     BadRequestError,
     ConflictError,
-    ForbiddenError,
     NotFoundError,
 )
 
@@ -177,7 +176,7 @@ class OrderService:
         order_items, subtotal_paise = self._resolve_cart_order_items(user_id)
 
         if address_id:
-            addr = self._address_repo.find_by_id(address_id)
+            addr = self._address_repo.find_by_id_for_user(address_id, user_id)
             if not addr or addr.user_id != user_id:
                 raise NotFoundError("Selected shipping address not found")
 
@@ -204,7 +203,7 @@ class OrderService:
     def create_order(
         self, user_id: str, address_id: str, coupon_code: Optional[str] = None
     ) -> Order:
-        address = self._address_repo.find_by_id(address_id)
+        address = self._address_repo.find_by_id_for_user(address_id, user_id)
         if not address or address.user_id != user_id:
             raise NotFoundError("Shipping address not found")
 
@@ -270,11 +269,9 @@ class OrderService:
         return order
 
     def create_payment_session(self, user_id: str, order_id: str):
-        order = self._order_repo.find_by_id(order_id)
-        if not order:
+        order = self._order_repo.find_by_id_for_user(order_id, user_id)
+        if not order or order.user_id != user_id:
             raise NotFoundError("Order not found")
-        if order.user_id != user_id:
-            raise ForbiddenError("You do not have access to this order")
         if order.status != "pending":
             raise ConflictError(
                 f"Cannot initiate payment for order in '{order.status}' status"
@@ -436,11 +433,13 @@ class OrderService:
     def get_order_for_user(
         self, order_id: str, user_id: str, is_admin: bool = False
     ) -> Order:
-        order = self._order_repo.find_by_id(order_id)
-        if not order:
+        order = (
+            self._order_repo.find_by_id(order_id)
+            if is_admin
+            else self._order_repo.find_by_id_for_user(order_id, user_id)
+        )
+        if not order or (not is_admin and order.user_id != user_id):
             raise NotFoundError("Order not found")
-        if not is_admin and order.user_id != user_id:
-            raise ForbiddenError("You do not have access to this order")
         return order
 
     def cancel_order(

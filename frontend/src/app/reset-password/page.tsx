@@ -72,17 +72,22 @@ function ResetPasswordForm() {
               htmlFor="reset-pw"
               className="block text-xs font-semibold text-espresso-800"
             >
-              New Password (min 8 chars) *
+              New Password <span aria-hidden="true">*</span>
             </label>
+            <p id="reset-pw-rules" className="mt-0.5 text-xs text-espresso-500">
+              Minimum 10 characters, avoid common passwords, and do not include your email.
+            </p>
             <input
               id="reset-pw"
+              name="newPassword"
               type="password"
               required
-              minLength={8}
+              minLength={10}
               autoComplete="new-password"
+              aria-describedby="reset-pw-rules"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
-              className="mt-1 h-12 w-full rounded-xl border border-espresso-200 px-3.5 text-base"
+              className="auth-field mt-1 h-12 w-full rounded-xl border border-espresso-200 px-3.5 text-base"
             />
           </div>
 

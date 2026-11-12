@@ -56,6 +56,13 @@ class InMemoryOrderRepository(OrderRepository):
                     return o.model_copy(deep=True)
             return None
 
+    def find_by_id_for_user(self, order_id: str, user_id: str) -> Optional[Order]:
+        with self._lock:
+            for o in self._orders:
+                if o.id == order_id and o.user_id == user_id:
+                    return o.model_copy(deep=True)
+            return None
+
     def find_by_order_number(self, order_number: str) -> Optional[Order]:
         with self._lock:
             for o in self._orders:

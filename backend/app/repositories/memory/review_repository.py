@@ -60,6 +60,15 @@ class InMemoryReviewRepository(ReviewRepository):
                     return r.model_copy(deep=True)
             return None
 
+    def find_by_id_for_user(
+        self, review_id: str, user_id: str
+    ) -> Optional[Review]:
+        with self._lock:
+            for r in self._reviews:
+                if r.id == review_id and r.user_id == user_id:
+                    return r.model_copy(deep=True)
+            return None
+
     def find_by_user_and_product(
         self, user_id: str, product_id: str
     ) -> Optional[Review]:
@@ -91,6 +100,16 @@ class InMemoryReviewRepository(ReviewRepository):
         with self._lock:
             before = len(self._reviews)
             self._reviews = [r for r in self._reviews if r.id != review_id]
+            return len(self._reviews) < before
+
+    def delete_for_user(self, review_id: str, user_id: str) -> bool:
+        with self._lock:
+            before = len(self._reviews)
+            self._reviews = [
+                r
+                for r in self._reviews
+                if not (r.id == review_id and r.user_id == user_id)
+            ]
             return len(self._reviews) < before
 
     def get_stats_for_product(self, product_id: str) -> ReviewStats:

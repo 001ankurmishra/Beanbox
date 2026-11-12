@@ -31,6 +31,7 @@ from app.routers import (
 )
 from app.services import Services, create_services
 from app.services.email_service import EmailService
+from app.services.google_oauth_service import GoogleOAuthClient
 from app.services.payment_service import PaymentProvider
 from app.utils.response import make_success_response
 
@@ -38,6 +39,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+logger = logging.getLogger("beanbox.boot")
 
 
 def create_app(
@@ -45,9 +47,15 @@ def create_app(
     repos: Optional[Repositories] = None,
     email_service: Optional[EmailService] = None,
     payment_provider: Optional[PaymentProvider] = None,
+    google_oauth_client: Optional[GoogleOAuthClient] = None,
 ) -> FastAPI:
     app_settings = settings or get_settings()
     is_test = app_settings.app_env == "test"
+
+    if app_settings.app_env == "production" and not app_settings.totp_encryption_key.strip():
+        logger.warning(
+            "TOTP_ENCRYPTION_KEY is not set; falling back to HKDF key derived from JWT_SECRET."
+        )
 
     pg_pool: Any = None
     backend_type = "memory"
@@ -73,6 +81,7 @@ def create_app(
         app_settings,
         email_service=email_service,
         payment_provider=payment_provider,
+        google_oauth_client=google_oauth_client,
     )
 
     @asynccontextmanager
@@ -83,11 +92,11 @@ def create_app(
 
     app = FastAPI(
         title="BeanBox Coffee E-Commerce API",
-        version="1.0.0",
+        version="2.0.0",
         description=(
-            "Production-style Python + FastAPI backend for BeanBox, an India-based "
-            "specialty coffee store (INR paise pricing, 5% GST, free shipping above ₹999, "
-            "httpOnly JWT cookies, repository abstraction)."
+            "Production-grade Python + FastAPI backend for BeanBox, an India-based "
+            "specialty coffee store (short-lived httpOnly JWTs, rotating refresh tokens "
+            "with reuse detection, Argon2id, double-submit CSRF, TOTP 2FA, Google OAuth PKCE)."
         ),
         docs_url="/api/docs",
         redoc_url="/api/redoc",
@@ -99,10 +108,18 @@ def create_app(
     app.state.repos = app_repos
     app.state.services = app_services
     app.state.backend_type = backend_type
-    app.state.auth_limiter = InMemoryRateLimiter(
-        max_requests=500 if is_test else 25,
-        window_seconds=900,
-    )
+
+    window = app_settings.rate_limit_window_seconds
+    app.state.limiters = {
+        "login": InMemoryRateLimiter(app_settings.rate_limit_login_max, window),
+        "signup": InMemoryRateLimiter(app_settings.rate_limit_signup_max, window),
+        "reset": InMemoryRateLimiter(app_settings.rate_limit_reset_max, window),
+        "verify_resend": InMemoryRateLimiter(
+            app_settings.rate_limit_verify_resend_max, window
+        ),
+        "refresh": InMemoryRateLimiter(app_settings.rate_limit_refresh_max, window),
+        "2fa": InMemoryRateLimiter(app_settings.rate_limit_2fa_max, window),
+    }
 
     general_limiter = InMemoryRateLimiter(
         max_requests=5000 if is_test else 240,
@@ -112,6 +129,7 @@ def create_app(
     app.add_middleware(
         SecurityAndLoggingMiddleware,
         general_limiter=general_limiter,
+        settings=app_settings,
         is_test=is_test,
     )
     app.add_middleware(
@@ -120,6 +138,7 @@ def create_app(
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-CSRF-Token", "X-Request-Id"],
     )
 
     register_exception_handlers(app, is_test=is_test)

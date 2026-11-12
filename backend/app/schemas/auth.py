@@ -22,7 +22,7 @@ def _clean_optional_phone(v: Optional[str]) -> Optional[str]:
 class SignupRequest(CamelModel):
     name: str = Field(min_length=2, max_length=80)
     email: EmailStr
-    password: str = Field(min_length=8, max_length=100)
+    password: str = Field(min_length=10, max_length=128)
     phone: Optional[str] = None
 
     @field_validator("name")
@@ -43,7 +43,7 @@ class SignupRequest(CamelModel):
 
 class LoginRequest(CamelModel):
     email: EmailStr
-    password: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=1, max_length=128)
 
     @field_validator("email")
     @classmethod
@@ -61,6 +61,15 @@ class UpdateProfileRequest(CamelModel):
         return _clean_optional_phone(v)
 
 
+class ChangePasswordRequest(CamelModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=10, max_length=128)
+
+
+class VerifyEmailRequest(CamelModel):
+    token: str = Field(min_length=16, max_length=256)
+
+
 class ForgotPasswordRequest(CamelModel):
     email: EmailStr
 
@@ -71,5 +80,19 @@ class ForgotPasswordRequest(CamelModel):
 
 
 class ResetPasswordRequest(CamelModel):
-    token: str = Field(min_length=16, max_length=200)
-    new_password: str = Field(min_length=8, max_length=100)
+    token: str = Field(min_length=16, max_length=256)
+    new_password: str = Field(min_length=10, max_length=128)
+
+
+class TotpCodeRequest(CamelModel):
+    code: str = Field(min_length=6, max_length=32)
+
+
+class Verify2faLoginRequest(CamelModel):
+    challenge_token: str = Field(min_length=16, max_length=2000)
+    code: str = Field(min_length=6, max_length=32)
+
+
+class Disable2faRequest(CamelModel):
+    code: str = Field(min_length=6, max_length=32)
+    password: Optional[str] = Field(default=None, max_length=128)

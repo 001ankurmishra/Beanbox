@@ -211,7 +211,10 @@ class CartService:
 
     def remove_item(self, owner: CartOwner, variant_id: str) -> HydratedCart:
         cart = self._get_cart(owner)
-        items = [i for i in (cart.items if cart else []) if i.variant_id != variant_id]
+        existing_items = list(cart.items) if cart else []
+        if not any(i.variant_id == variant_id for i in existing_items):
+            raise NotFoundError("Cart item not found")
+        items = [i for i in existing_items if i.variant_id != variant_id]
         saved = self._save_items(owner, items)
         return self.hydrate(saved)
 

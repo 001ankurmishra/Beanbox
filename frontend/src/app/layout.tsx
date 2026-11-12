@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { Fraunces, Plus_Jakarta_Sans } from 'next/font/google';
 import './globals.css';
 import { Providers } from '@/components/Providers';
+import { VerifyEmailBanner } from '@/components/auth/VerifyEmailBanner';
 import { Navbar } from '@/components/layout/Navbar';
 import { Footer } from '@/components/layout/Footer';
 import { CartDrawer } from '@/components/cart/CartDrawer';
@@ -50,6 +51,7 @@ export default function RootLayout({
             Skip to main content
           </a>
           <Navbar />
+          <VerifyEmailBanner />
           <CartDrawer />
           <main id="main-content" className="flex-1">
             {children}

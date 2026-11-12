@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
@@ -38,6 +38,9 @@ class User(CamelModel):
     phone: Optional[str] = None
     password_hash: str
     role: UserRole
+    email_verified: bool = False
+    email_verified_at: Optional[str] = None
+    totp_enabled: bool = False
     created_at: str
     updated_at: str
 
@@ -48,6 +51,9 @@ class PublicUser(CamelModel):
     email: str
     phone: Optional[str] = None
     role: UserRole
+    email_verified: bool = False
+    email_verified_at: Optional[str] = None
+    totp_enabled: bool = False
     created_at: str
     updated_at: str
 
@@ -58,6 +64,103 @@ class PasswordResetToken(CamelModel):
     token_hash: str
     expires_at: str
     used_at: Optional[str] = None
+    created_at: str
+
+
+class EmailVerificationToken(CamelModel):
+    id: str
+    user_id: str
+    token_hash: str
+    expires_at: str
+    used_at: Optional[str] = None
+    created_at: str
+
+
+class Session(CamelModel):
+    id: str
+    user_id: str
+    refresh_token_hash: str
+    previous_refresh_hashes: list[str] = []
+    grace_refresh_hash: Optional[str] = None
+    grace_expires_at: Optional[str] = None
+    family_id: str
+    user_agent: str
+    ip: str
+    created_at: str
+    last_used_at: str
+    expires_at: str
+    revoked_at: Optional[str] = None
+
+
+class PublicSession(CamelModel):
+    id: str
+    user_agent: str
+    ip: str
+    created_at: str
+    last_used_at: str
+    expires_at: str
+    is_current: bool = False
+
+
+OAuthProvider = Literal["google"]
+
+
+class OAuthAccount(CamelModel):
+    id: str
+    user_id: str
+    provider: OAuthProvider
+    provider_user_id: str
+    provider_email: str
+    created_at: str
+    updated_at: str
+
+
+class TotpSecret(CamelModel):
+    id: str
+    user_id: str
+    encrypted_secret: str
+    is_enabled: bool = False
+    last_used_timestep: Optional[int] = None
+    verified_at: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class RecoveryCode(CamelModel):
+    id: str
+    user_id: str
+    code_hash: str
+    used_at: Optional[str] = None
+    created_at: str
+
+
+LoginAttemptKeyType = Literal["account", "ip", "2fa"]
+
+
+class LoginAttemptRecord(CamelModel):
+    id: str
+    key: str
+    key_type: LoginAttemptKeyType
+    failed_count: int = 0
+    lockout_level: int = 0
+    first_failed_at: str
+    last_failed_at: str
+    locked_until: Optional[str] = None
+
+
+AuditOutcome = Literal["success", "failure", "warning"]
+
+
+class AuditLogEntry(CamelModel):
+    id: str
+    user_id: Optional[str] = None
+    event_type: str
+    outcome: AuditOutcome
+    target_id: Optional[str] = None
+    ip: str
+    user_agent: str
+    request_id: str
+    metadata: dict[str, Any] = {}
     created_at: str
 
 

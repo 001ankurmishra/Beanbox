@@ -8,12 +8,14 @@ import React, {
   useState
 } from 'react';
 import { authApi } from '@/lib/api/endpoints';
-import { User } from '@/types/api';
+import { LoginResult, User } from '@/types/api';
 
 interface AuthContextValue {
   user: User | null;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<User>;
+  googleOAuthEnabled: boolean;
+  login: (email: string, password: string) => Promise<LoginResult>;
+  verify2faLogin: (challengeToken: string, code: string) => Promise<User>;
   signup: (data: {
     name: string;
     email: string;
@@ -21,6 +23,7 @@ interface AuthContextValue {
     phone?: string;
   }) => Promise<User>;
   logout: () => Promise<void>;
+  logoutAll: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
 
@@ -29,6 +32,7 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [googleOAuthEnabled, setGoogleOAuthEnabled] = useState(false);
 
   const refreshUser = useCallback(async () => {
     try {
@@ -43,10 +47,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     refreshUser();
+    authApi
+      .providers()
+      .then((res) => setGoogleOAuthEnabled(Boolean(res.googleOAuthEnabled)))
+      .catch(() => setGoogleOAuthEnabled(false));
   }, [refreshUser]);
 
   const login = useCallback(async (email: string, password: string) => {
     const res = await authApi.login({ email, password });
+    if (!res.requiresTwoFactor && 'user' in res) {
+      setUser(res.user);
+    }
+    return res;
+  }, []);
+
+  const verify2faLogin = useCallback(async (challengeToken: string, code: string) => {
+    const res = await authApi.verify2faLogin({ challengeToken, code });
     setUser(res.user);
     return res.user;
   }, []);
@@ -66,13 +82,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    await authApi.logout();
-    setUser(null);
+    try {
+      await authApi.logout();
+    } finally {
+      setUser(null);
+    }
+  }, []);
+
+  const logoutAll = useCallback(async () => {
+    try {
+      await authApi.logoutAll();
+    } finally {
+      setUser(null);
+    }
   }, []);
 
   return (
     <AuthContext.Provider
-      value={{ user, isLoading, login, signup, logout, refreshUser }}
+      value={{
+        user,
+        isLoading,
+        googleOAuthEnabled,
+        login,
+        verify2faLogin,
+        signup,
+        logout,
+        logoutAll,
+        refreshUser
+      }}
     >
       {children}
     </AuthContext.Provider>

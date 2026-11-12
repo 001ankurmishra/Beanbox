@@ -1,18 +1,15 @@
-from tests.conftest import create_test_app, login_client, new_client
+from tests.conftest import create_test_app, login_client, signup_verified_client
 
 
 def test_atomic_stock_reservation_oversell_prevention_and_cancel_release():
     app = create_test_app()
     user_a = login_client(app, "arjun@beanbox.in", "Coffee@1234")
 
-    user_b = new_client(app)
-    user_b.post(
-        "/api/auth/signup",
-        json={
-            "name": "Rohan Das",
-            "email": "rohan@example.in",
-            "password": "Password@123",
-        },
+    user_b = signup_verified_client(
+        app,
+        name="Rohan Das",
+        email="rohan@example.in",
+        password="Password@123",
     )
     addr_b = user_b.post(
         "/api/addresses",

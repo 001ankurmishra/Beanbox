@@ -10,6 +10,7 @@ from app.dependencies import (
     get_app_settings,
     get_services,
     require_auth,
+    require_verified,
 )
 from app.schemas.order import (
     CreatePaymentSessionRequest,
@@ -26,7 +27,7 @@ router = APIRouter(prefix="/api/payments", tags=["Payments"])
 @router.post("/checkout-session")
 def create_checkout_session(
     body: CreatePaymentSessionRequest,
-    principal: AuthPrincipal = Depends(require_auth),
+    principal: AuthPrincipal = Depends(require_verified),
     services: Services = Depends(get_services),
 ):
     session = services.order_service.create_payment_session(

@@ -5,9 +5,11 @@ from app.config import Settings
 from app.repositories.interfaces import Repositories
 from app.services.address_service import AddressService
 from app.services.admin_service import AdminService
+from app.services.audit_service import AuditService
 from app.services.auth_service import AuthService
 from app.services.cart_service import CartService
 from app.services.email_service import ConsoleEmailService, EmailService
+from app.services.google_oauth_service import GoogleOAuthClient, HttpxGoogleOAuthClient
 from app.services.order_service import OrderService
 from app.services.payment_service import PaymentProvider, create_payment_provider
 from app.services.product_service import ProductService
@@ -19,6 +21,7 @@ from app.services.wishlist_service import WishlistService
 class Services:
     email_service: EmailService
     payment_provider: PaymentProvider
+    audit_service: AuditService
     auth_service: AuthService
     product_service: ProductService
     cart_service: CartService
@@ -34,11 +37,26 @@ def create_services(
     settings: Settings,
     email_service: Optional[EmailService] = None,
     payment_provider: Optional[PaymentProvider] = None,
+    google_oauth_client: Optional[GoogleOAuthClient] = None,
 ) -> Services:
     email = email_service or ConsoleEmailService(quiet=settings.app_env == "test")
     provider = payment_provider or create_payment_provider(settings)
+    audit = AuditService(repos.audit_logs)
+    oauth_client = google_oauth_client or (
+        HttpxGoogleOAuthClient(settings) if settings.google_oauth_enabled else None
+    )
 
-    auth = AuthService(repos.users, email, settings)
+    auth = AuthService(
+        user_repo=repos.users,
+        session_repo=repos.sessions,
+        oauth_repo=repos.oauth_accounts,
+        two_factor_repo=repos.two_factor,
+        login_attempt_repo=repos.login_attempts,
+        audit_service=audit,
+        email_service=email,
+        google_oauth_client=oauth_client,
+        settings=settings,
+    )
     products = ProductService(repos.products)
     cart = CartService(repos.carts, repos.products)
     addresses = AddressService(repos.addresses)
@@ -61,14 +79,17 @@ def create_services(
         repos.orders,
         repos.coupons,
         repos.users,
+        repos.sessions,
         orders,
         provider,
         email,
+        audit,
     )
 
     return Services(
         email_service=email,
         payment_provider=provider,
+        audit_service=audit,
         auth_service=auth,
         product_service=products,
         cart_service=cart,

@@ -29,5 +29,7 @@ class WishlistService:
         return self.list(user_id)
 
     def remove(self, user_id: str, product_id: str) -> list[Product]:
-        self._wishlist_repo.remove(user_id, product_id)
+        removed = self._wishlist_repo.remove(user_id, product_id)
+        if not removed:
+            raise NotFoundError("Wishlist item not found")
         return self.list(user_id)

@@ -10,6 +10,7 @@ from app.models.domain import (
     Product,
     ProductVariant,
     PublicUser,
+    UserRole,
 )
 from app.repositories.interfaces import (
     CouponRepository,
@@ -20,17 +21,20 @@ from app.repositories.interfaces import (
     OrderUpdateFields,
     ProductListQuery,
     ProductRepository,
+    SessionRepository,
     TopProductStat,
     UpdateCouponInput,
     UpdateProductInput,
+    UpdateUserInput,
     UserRepository,
 )
 from app.schemas.common import PaginationMeta
+from app.services.audit_service import AuditService, RequestContext
 from app.services.auth_service import to_public_user
 from app.services.email_service import EmailService
 from app.services.order_service import OrderService
 from app.services.payment_service import PaymentProvider
-from app.utils.errors import ConflictError, NotFoundError
+from app.utils.errors import BadRequestError, ConflictError, NotFoundError
 
 ALLOWED_STATUS_TRANSITIONS: dict[OrderStatus, list[OrderStatus]] = {
     "pending": ["paid", "cancelled"],
@@ -70,17 +74,21 @@ class AdminService:
         order_repo: OrderRepository,
         coupon_repo: CouponRepository,
         user_repo: UserRepository,
+        session_repo: SessionRepository,
         order_service: OrderService,
         payment_provider: PaymentProvider,
         email_service: EmailService,
+        audit_service: AuditService,
     ) -> None:
         self._product_repo = product_repo
         self._order_repo = order_repo
         self._coupon_repo = coupon_repo
         self._user_repo = user_repo
+        self._session_repo = session_repo
         self._order_service = order_service
         self._payment_provider = payment_provider
         self._email_service = email_service
+        self._audit = audit_service
 
     def get_dashboard_stats(self) -> AdminDashboardStats:
         order_stats = self._order_repo.get_dashboard_stats()
@@ -270,3 +278,50 @@ class AdminService:
                 has_prev=page > 1,
             ),
         }
+
+    def update_user_role(
+        self,
+        target_user_id: str,
+        next_role: UserRole,
+        actor_user_id: str,
+        ctx: Optional[RequestContext] = None,
+    ) -> PublicUser:
+        if target_user_id == actor_user_id:
+            raise BadRequestError(
+                "Administrators cannot modify their own role",
+                code="CANNOT_CHANGE_OWN_ROLE",
+            )
+        user = self._user_repo.find_by_id(target_user_id)
+        if not user:
+            raise NotFoundError("User not found")
+        prev_role = user.role
+        if prev_role == next_role:
+            return to_public_user(user)
+
+        updated = self._user_repo.update(user.id, UpdateUserInput(role=next_role))
+        assert updated is not None
+        revoked = self._session_repo.revoke_all_for_user(user.id)
+        self._audit.record(
+            event_type="role_changed",
+            outcome="success",
+            ctx=ctx,
+            user_id=actor_user_id,
+            target_id=user.id,
+            metadata={
+                "previousRole": prev_role,
+                "nextRole": next_role,
+                "revokedTargetSessions": revoked,
+            },
+        )
+        return to_public_user(updated)
+
+    def list_audit_logs(
+        self,
+        page: int = 1,
+        limit: int = 25,
+        event_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        return self._audit.list_logs(
+            page=page, limit=limit, event_type=event_type, user_id=user_id
+        )

@@ -6,8 +6,61 @@ export interface User {
   email: string;
   phone?: string | null;
   role: UserRole;
+  emailVerified: boolean;
+  emailVerifiedAt?: string | null;
+  totpEnabled: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export type LoginResult =
+  | {
+      requiresTwoFactor: true;
+      challengeToken: string;
+      methods: Array<'totp' | 'recovery_code'>;
+    }
+  | {
+      requiresTwoFactor?: false;
+      user: User;
+    };
+
+export interface UserSession {
+  id: string;
+  userAgent: string;
+  ip: string;
+  createdAt: string;
+  lastUsedAt: string;
+  expiresAt: string;
+  isCurrent: boolean;
+}
+
+export interface TwoFactorSetupResponse {
+  secret: string;
+  otpauthUrl: string;
+  qrDataUrl: string;
+}
+
+export interface TwoFactorStatusResponse {
+  enabled: boolean;
+  requiredForRole: boolean;
+  recoveryCodesRemaining: number;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  userId?: string | null;
+  eventType: string;
+  outcome: 'success' | 'failure' | 'warning';
+  targetId?: string | null;
+  ip: string;
+  userAgent: string;
+  requestId: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface AuthProvidersResponse {
+  googleOAuthEnabled: boolean;
 }
 
 export type ProductCategory = 'beans' | 'ground' | 'cold_brew' | 'equipment' | 'gift_sets';

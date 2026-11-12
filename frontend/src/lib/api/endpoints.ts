@@ -1,9 +1,12 @@
 import {
   Address,
   AdminDashboardStats,
+  AuditLogEntry,
+  AuthProvidersResponse,
   CheckoutPreview,
   Coupon,
   HydratedCart,
+  LoginResult,
   Order,
   OrderInvoice,
   OrderStatus,
@@ -15,29 +18,66 @@ import {
   Review,
   ReviewListResponse,
   RoastLevel,
-  User
+  TwoFactorSetupResponse,
+  TwoFactorStatusResponse,
+  User,
+  UserRole,
+  UserSession
 } from '@/types/api';
-import { apiFetch } from './client';
+import { API_BASE_URL, apiFetch } from './client';
 
 export const authApi = {
-  me: () => apiFetch<{ user: User }>('/auth/me'),
+  providers: () =>
+    apiFetch<AuthProvidersResponse>('/auth/providers', { skipAuthRedirect: true }),
+  csrf: () => apiFetch<{ csrfToken: string }>('/auth/csrf', { skipAuthRedirect: true }),
+  me: () => apiFetch<{ user: User }>('/auth/me', { skipAuthRedirect: true }),
   updateMe: (body: { name?: string; phone?: string }) =>
     apiFetch<{ user: User }>('/auth/me', {
       method: 'PATCH',
       body: JSON.stringify(body)
     }),
   signup: (body: { name: string; email: string; password: string; phone?: string }) =>
-    apiFetch<{ user: User }>('/auth/signup', {
+    apiFetch<{ user: User; requiresEmailVerification?: boolean }>('/auth/signup', {
       method: 'POST',
       body: JSON.stringify(body)
     }),
   login: (body: { email: string; password: string }) =>
-    apiFetch<{ user: User }>('/auth/login', {
+    apiFetch<LoginResult>('/auth/login', {
       method: 'POST',
       body: JSON.stringify(body)
     }),
+  verify2faLogin: (body: { challengeToken: string; code: string }) =>
+    apiFetch<{ user: User; requiresTwoFactor?: false }>('/auth/2fa/verify-login', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    }),
+  refresh: () =>
+    apiFetch<{ user: User }>('/auth/refresh', {
+      method: 'POST',
+      skipAuthRedirect: true
+    }),
   logout: () =>
     apiFetch<{ message: string }>('/auth/logout', { method: 'POST' }),
+  logoutAll: () =>
+    apiFetch<{ message: string; revokedSessions: number }>('/auth/logout-all', {
+      method: 'POST'
+    }),
+  changePassword: (body: { currentPassword: string; newPassword: string }) =>
+    apiFetch<{ message: string; revokedOtherSessions: number }>(
+      '/auth/change-password',
+      {
+        method: 'POST',
+        body: JSON.stringify(body)
+      }
+    ),
+  verifyEmail: (token: string) =>
+    apiFetch<{ user: User; message: string }>('/auth/verify-email', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+      skipAuthRedirect: true
+    }),
+  resendVerification: () =>
+    apiFetch<{ message: string }>('/auth/verify-email/resend', { method: 'POST' }),
   forgotPassword: (email: string) =>
     apiFetch<{ message: string }>('/auth/forgot-password', {
       method: 'POST',
@@ -47,7 +87,35 @@ export const authApi = {
     apiFetch<{ message: string }>('/auth/reset-password', {
       method: 'POST',
       body: JSON.stringify(body)
-    })
+    }),
+  sessions: () => apiFetch<{ items: UserSession[] }>('/auth/sessions'),
+  revokeSession: (sessionId: string) =>
+    apiFetch<{ message: string }>(`/auth/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE'
+    }),
+  twoFactorStatus: () => apiFetch<TwoFactorStatusResponse>('/auth/2fa/status'),
+  setup2fa: () =>
+    apiFetch<TwoFactorSetupResponse>('/auth/2fa/setup', { method: 'POST' }),
+  enable2fa: (code: string) =>
+    apiFetch<{ user: User; totpEnabled: boolean; recoveryCodes: string[] }>(
+      '/auth/2fa/enable',
+      {
+        method: 'POST',
+        body: JSON.stringify({ code })
+      }
+    ),
+  disable2fa: (body: { code: string; password?: string }) =>
+    apiFetch<{ user: User; totpEnabled: boolean }>('/auth/2fa/disable', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    }),
+  regenerateRecoveryCodes: (code: string) =>
+    apiFetch<{ recoveryCodes: string[] }>('/auth/2fa/recovery-codes/regenerate', {
+      method: 'POST',
+      body: JSON.stringify({ code })
+    }),
+  googleStartUrl: (nextPath = '/') =>
+    `${API_BASE_URL}/auth/google/start?next=${encodeURIComponent(nextPath)}`
 };
 
 export interface ProductQueryParams {
@@ -306,5 +374,17 @@ export const adminApi = {
     apiFetch<{
       items: Array<User & { orderCount: number }>;
       pagination: PaginationMeta;
-    }>('/admin/users', { params: { page, limit } })
+    }>('/admin/users', { params: { page, limit } }),
+  updateUserRole: (userId: string, role: UserRole) =>
+    apiFetch<{ user: User }>(`/admin/users/${encodeURIComponent(userId)}/role`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role })
+    }),
+  auditLogs: (
+    params: { eventType?: string; userId?: string; page?: number; limit?: number } = {}
+  ) =>
+    apiFetch<{ items: AuditLogEntry[]; pagination: PaginationMeta }>(
+      '/admin/audit-logs',
+      { params }
+    )
 };

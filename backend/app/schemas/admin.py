@@ -10,6 +10,7 @@ from app.models.domain import (
     OrderStatus,
     ProductCategory,
     RoastLevel,
+    UserRole,
     VariantGrind,
     VariantSize,
 )
@@ -143,3 +144,7 @@ class AdminUpdateCouponRequest(CamelModel):
         if not COUPON_RE.match(s):
             raise ValueError("Coupon code can contain letters, numbers, _ and -")
         return s.upper()
+
+
+class AdminUpdateUserRoleRequest(CamelModel):
+    role: UserRole

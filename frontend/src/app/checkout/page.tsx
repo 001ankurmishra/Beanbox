@@ -15,7 +15,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useCart } from '@/context/CartContext';
 import { useToast } from '@/context/ToastContext';
 import { ApiClientError } from '@/lib/api/client';
-import { addressesApi, ordersApi, paymentsApi } from '@/lib/api/endpoints';
+import { addressesApi, authApi, ordersApi, paymentsApi } from '@/lib/api/endpoints';
 import { formatINR } from '@/lib/format';
 import { Address, CheckoutPreview } from '@/types/api';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -35,6 +35,7 @@ export default function CheckoutPage() {
   const [preview, setPreview] = useState<CheckoutPreview | null>(null);
   const [loadingPage, setLoadingPage] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [resendingVerify, setResendingVerify] = useState(false);
 
   // New address form state
   const [addrLabel, setAddrLabel] = useState<'Home' | 'Work' | 'Other'>('Home');
@@ -585,16 +586,63 @@ export default function CheckoutPage() {
               </div>
             </div>
 
+            {!user.emailVerified && (
+              <div
+                role="alert"
+                className="rounded-xl border border-amber-300 bg-amber-50 p-3.5 text-xs text-amber-950 space-y-2"
+              >
+                <p className="font-semibold">
+                  Verify your email address before placing an order.
+                </p>
+                <p>
+                  We sent a verification link to <strong>{user.email}</strong>.
+                </p>
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <button
+                    type="button"
+                    disabled={resendingVerify}
+                    onClick={async () => {
+                      setResendingVerify(true);
+                      try {
+                        const r = await authApi.resendVerification();
+                        showToast(r.message, 'success');
+                      } catch (err) {
+                        showToast(
+                          err instanceof ApiClientError
+                            ? err.message
+                            : 'Please wait before resending',
+                          'error'
+                        );
+                      } finally {
+                        setResendingVerify(false);
+                      }
+                    }}
+                    className="rounded-lg border border-amber-400 bg-white px-3 py-1.5 font-semibold text-amber-950 hover:bg-amber-100 disabled:opacity-50"
+                  >
+                    {resendingVerify ? 'Sending…' : 'Resend Email'}
+                  </button>
+                  <Link
+                    href="/verify-email"
+                    className="rounded-lg bg-amber-900 px-3 py-1.5 font-semibold text-white hover:bg-amber-800"
+                  >
+                    Verify Token
+                  </Link>
+                </div>
+              </div>
+            )}
+
             <button
               type="button"
-              disabled={submitting || !selectedAddressId}
+              disabled={submitting || !selectedAddressId || !user.emailVerified}
               onClick={handlePlaceOrder}
               className="flex min-h-[50px] w-full items-center justify-center gap-2 rounded-xl bg-espresso-900 px-6 text-sm font-semibold text-white hover:bg-caramel transition disabled:opacity-50"
             >
               <Lock className="h-4 w-4" aria-hidden="true" />
               {submitting
                 ? 'Creating Order & Payment Session…'
-                : `Pay ${formatINR(preview.pricing.totalPaise)}`}
+                : !user.emailVerified
+                  ? 'Verify Email to Place Order'
+                  : `Pay ${formatINR(preview.pricing.totalPaise)}`}
             </button>
 
             <p className="text-center text-xs text-espresso-500">

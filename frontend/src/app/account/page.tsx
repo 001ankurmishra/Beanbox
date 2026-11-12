@@ -132,6 +132,28 @@ export default function AccountProfilePage() {
                 Manage Home/Work addresses and PIN codes across India.
               </p>
             </Link>
+            <Link
+              href="/account/security"
+              className="rounded-xl border border-espresso-200 p-4 hover:border-caramel sm:col-span-2"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-sm text-espresso-900">
+                  Security Settings &amp; 2FA
+                </span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                    user?.totpEnabled
+                      ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                      : 'bg-amber-50 text-amber-800 border border-amber-200'
+                  }`}
+                >
+                  {user?.totpEnabled ? '2FA Active' : '2FA Off'}
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-espresso-600">
+                Change your password, manage active devices, configure authenticator 2FA, and save backup recovery codes.
+              </p>
+            </Link>
           </div>
         </div>
       </section>

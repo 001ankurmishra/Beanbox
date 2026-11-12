@@ -1,6 +1,10 @@
-import re
-
-from tests.conftest import create_test_app, login_client, new_client
+from tests.conftest import (
+    create_test_app,
+    extract_email_token,
+    login_client,
+    new_client,
+    sync_csrf,
+)
 
 
 def test_signup_cookie_welcome_email_and_duplicate_conflict():
@@ -21,18 +25,20 @@ def test_signup_cookie_welcome_email_and_duplicate_conflict():
     assert body["success"] is True
     assert body["data"]["user"]["email"] == "priya@example.in"
     assert body["data"]["user"]["role"] == "customer"
+    assert body["data"]["user"]["emailVerified"] is False
     assert "passwordHash" not in body["data"]["user"]
-    assert "beanbox_token" in res.cookies
+    assert "beanbox_access" in res.cookies
+    assert "beanbox_refresh" in res.cookies
+    assert "beanbox_csrf" in res.cookies
 
     set_cookie_header = res.headers.get("set-cookie", "")
     assert "HttpOnly" in set_cookie_header or "httponly" in set_cookie_header.lower()
 
-    emails = [
-        e
-        for e in app.state.services.email_service.get_sent_emails()
-        if e.type == "welcome" and e.to == "priya@example.in"
-    ]
-    assert len(emails) == 1
+    sent = app.state.services.email_service.get_sent_emails()
+    assert any(e.type == "welcome" and e.to == "priya@example.in" for e in sent)
+    assert any(
+        e.type == "email_verification" and e.to == "priya@example.in" for e in sent
+    )
 
     me_res = client.get("/api/auth/me")
     assert me_res.status_code == 200
@@ -59,6 +65,7 @@ def test_login_logout_and_admin_rbac():
         json={"email": "arjun@beanbox.in", "password": "WrongPassword"},
     )
     assert bad.status_code == 401
+    assert bad.json()["error"]["message"] == "Invalid credentials"
 
     customer = login_client(app, "arjun@beanbox.in", "Coffee@1234")
     denied = customer.get("/api/admin/stats")
@@ -77,6 +84,7 @@ def test_login_logout_and_admin_rbac():
 def test_forgot_and_single_use_reset_password():
     app = create_test_app()
     client = new_client(app)
+    existing_session = login_client(app, "arjun@beanbox.in", "Coffee@1234")
 
     forgot = client.post(
         "/api/auth/forgot-password", json={"email": "arjun@beanbox.in"}
@@ -88,9 +96,7 @@ def test_forgot_and_single_use_reset_password():
         for e in app.state.services.email_service.get_sent_emails()
         if e.type == "password_reset" and e.to == "arjun@beanbox.in"
     )
-    match = re.search(r"Token: ([a-f0-9]+)", reset_email.body)
-    assert match is not None
-    token = match.group(1)
+    token = extract_email_token(reset_email.body)
 
     reset_res = client.post(
         "/api/auth/reset-password",
@@ -98,7 +104,12 @@ def test_forgot_and_single_use_reset_password():
     )
     assert reset_res.status_code == 200
 
-    login_client(app, "arjun@beanbox.in", "NewCoffeePassword@99")
+    # Password reset must revoke existing sessions immediately
+    assert existing_session.get("/api/auth/me").status_code == 401
+
+    arjun_new = login_client(app, "arjun@beanbox.in", "NewCoffeePassword@99")
+    sync_csrf(arjun_new)
+    assert arjun_new.get("/api/auth/me").status_code == 200
 
     reuse_res = client.post(
         "/api/auth/reset-password",

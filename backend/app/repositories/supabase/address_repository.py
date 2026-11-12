@@ -55,6 +55,16 @@ class SupabaseAddressRepository(AddressRepository):
             ).fetchone()
             return _row_to_address(row) if row else None
 
+    def find_by_id_for_user(
+        self, address_id: str, user_id: str
+    ) -> Optional[Address]:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM addresses WHERE id = %s AND user_id = %s;",
+                (address_id, user_id),
+            ).fetchone()
+            return _row_to_address(row) if row else None
+
     def create(self, data: CreateAddressInput) -> Address:
         with self._pool.connection() as conn:
             with conn.transaction():

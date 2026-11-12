@@ -2,8 +2,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-import bcrypt
-
 from app.models.domain import (
     Address,
     Coupon,
@@ -19,14 +17,11 @@ from app.models.domain import (
     User,
     WishlistItem,
 )
+from app.utils.security import hash_password_argon2
 
 # Pre-hashed once at module import so test suites spin up isolated seeded apps in <2ms
-_ADMIN_PASSWORD_HASH = bcrypt.hashpw(
-    b"Admin@1234", bcrypt.gensalt(rounds=10)
-).decode("utf-8")
-_CUSTOMER_PASSWORD_HASH = bcrypt.hashpw(
-    b"Coffee@1234", bcrypt.gensalt(rounds=10)
-).decode("utf-8")
+_ADMIN_PASSWORD_HASH = hash_password_argon2("Admin@1234")
+_CUSTOMER_PASSWORD_HASH = hash_password_argon2("Coffee@1234")
 
 
 @dataclass
@@ -154,6 +149,9 @@ def create_seed_data() -> SeedDataset:
             phone="9880123456",
             password_hash=_ADMIN_PASSWORD_HASH,
             role="admin",
+            email_verified=True,
+            email_verified_at=now,
+            totp_enabled=False,
             created_at=now,
             updated_at=now,
         ),
@@ -164,6 +162,9 @@ def create_seed_data() -> SeedDataset:
             phone="9820456789",
             password_hash=_CUSTOMER_PASSWORD_HASH,
             role="customer",
+            email_verified=True,
+            email_verified_at=now,
+            totp_enabled=False,
             created_at=now,
             updated_at=now,
         ),

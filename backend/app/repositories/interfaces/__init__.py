@@ -1,8 +1,11 @@
 from dataclasses import dataclass
 
 from .address_repository import AddressRepository, CreateAddressInput, UpdateAddressInput
+from .audit_log_repository import AuditLogRepository, CreateAuditLogInput
 from .cart_repository import CartRepository
 from .coupon_repository import CouponRepository, CreateCouponInput, UpdateCouponInput
+from .login_attempt_repository import LoginAttemptRepository
+from .oauth_repository import CreateOAuthAccountInput, OAuthAccountRepository
 from .order_repository import (
     CreateOrderInput,
     OrderDashboardStats,
@@ -25,6 +28,8 @@ from .product_repository import (
     VariantInput,
 )
 from .review_repository import CreateReviewInput, ReviewRepository, ReviewStats
+from .session_repository import CreateSessionInput, SessionRepository
+from .two_factor_repository import TwoFactorRepository
 from .user_repository import CreateUserInput, UpdateUserInput, UserRepository
 from .wishlist_repository import WishlistRepository
 
@@ -32,6 +37,11 @@ from .wishlist_repository import WishlistRepository
 @dataclass
 class Repositories:
     users: UserRepository
+    sessions: SessionRepository
+    oauth_accounts: OAuthAccountRepository
+    two_factor: TwoFactorRepository
+    login_attempts: LoginAttemptRepository
+    audit_logs: AuditLogRepository
     products: ProductRepository
     carts: CartRepository
     coupons: CouponRepository
@@ -44,15 +54,21 @@ class Repositories:
 
 __all__ = [
     "AddressRepository",
+    "AuditLogRepository",
     "CartRepository",
     "CouponRepository",
     "CreateAddressInput",
+    "CreateAuditLogInput",
     "CreateCouponInput",
+    "CreateOAuthAccountInput",
     "CreateOrderInput",
     "CreateProductInput",
     "CreateReviewInput",
+    "CreateSessionInput",
     "CreateUserInput",
+    "LoginAttemptRepository",
     "LowStockVariantEntry",
+    "OAuthAccountRepository",
     "OrderDashboardStats",
     "OrderRepository",
     "OrderUpdateFields",
@@ -64,10 +80,12 @@ __all__ = [
     "Repositories",
     "ReviewRepository",
     "ReviewStats",
+    "SessionRepository",
     "StockReservationFailure",
     "StockReservationItem",
     "StockReservationResult",
     "TopProductStat",
+    "TwoFactorRepository",
     "UpdateAddressInput",
     "UpdateCouponInput",
     "UpdateProductInput",

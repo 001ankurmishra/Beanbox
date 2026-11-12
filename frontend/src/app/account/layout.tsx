@@ -3,12 +3,13 @@
 import React, { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Heart, LogOut, MapPin, Package, User } from 'lucide-react';
+import { Heart, LogOut, MapPin, Package, ShieldCheck, User } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
 
 const ACCOUNT_TABS = [
   { href: '/account', label: 'Profile', icon: User },
+  { href: '/account/security', label: 'Security', icon: ShieldCheck },
   { href: '/account/orders', label: 'Orders', icon: Package },
   { href: '/account/addresses', label: 'Addresses', icon: MapPin },
   { href: '/account/wishlist', label: 'Wishlist', icon: Heart }

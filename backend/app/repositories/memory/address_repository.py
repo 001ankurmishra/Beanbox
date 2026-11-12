@@ -35,6 +35,15 @@ class InMemoryAddressRepository(AddressRepository):
                     return a.model_copy(deep=True)
             return None
 
+    def find_by_id_for_user(
+        self, address_id: str, user_id: str
+    ) -> Optional[Address]:
+        with self._lock:
+            for a in self._addresses:
+                if a.id == address_id and a.user_id == user_id:
+                    return a.model_copy(deep=True)
+            return None
+
     def create(self, data: CreateAddressInput) -> Address:
         now = _now_iso()
         with self._lock:

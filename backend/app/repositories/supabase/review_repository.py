@@ -79,6 +79,16 @@ class SupabaseReviewRepository(ReviewRepository):
             ).fetchone()
             return _row_to_review(row) if row else None
 
+    def find_by_id_for_user(
+        self, review_id: str, user_id: str
+    ) -> Optional[Review]:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM reviews WHERE id = %s AND user_id = %s;",
+                (review_id, user_id),
+            ).fetchone()
+            return _row_to_review(row) if row else None
+
     def find_by_user_and_product(
         self, user_id: str, product_id: str
     ) -> Optional[Review]:
@@ -115,6 +125,14 @@ class SupabaseReviewRepository(ReviewRepository):
     def delete(self, review_id: str) -> bool:
         with self._pool.connection() as conn:
             res = conn.execute("DELETE FROM reviews WHERE id = %s;", (review_id,))
+            return res.rowcount > 0
+
+    def delete_for_user(self, review_id: str, user_id: str) -> bool:
+        with self._pool.connection() as conn:
+            res = conn.execute(
+                "DELETE FROM reviews WHERE id = %s AND user_id = %s;",
+                (review_id, user_id),
+            )
             return res.rowcount > 0
 
     def get_stats_for_product(self, product_id: str) -> ReviewStats:

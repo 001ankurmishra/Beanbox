@@ -32,6 +32,11 @@ class ReviewRepository(ABC):
     def find_by_id(self, review_id: str) -> Optional[Review]: ...
 
     @abstractmethod
+    def find_by_id_for_user(
+        self, review_id: str, user_id: str
+    ) -> Optional[Review]: ...
+
+    @abstractmethod
     def find_by_user_and_product(
         self, user_id: str, product_id: str
     ) -> Optional[Review]: ...
@@ -41,6 +46,9 @@ class ReviewRepository(ABC):
 
     @abstractmethod
     def delete(self, review_id: str) -> bool: ...
+
+    @abstractmethod
+    def delete_for_user(self, review_id: str, user_id: str) -> bool: ...
 
     @abstractmethod
     def get_stats_for_product(self, product_id: str) -> ReviewStats: ...

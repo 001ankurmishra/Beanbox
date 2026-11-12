@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   Boxes,
   Coffee,
+  FileSearch,
   LayoutDashboard,
   PackageCheck,
   ShieldAlert,
@@ -18,7 +19,8 @@ const ADMIN_LINKS = [
   { href: '/admin/products', label: 'Products', icon: Coffee },
   { href: '/admin/orders', label: 'Orders', icon: PackageCheck },
   { href: '/admin/inventory', label: 'Inventory', icon: Boxes },
-  { href: '/admin/coupons', label: 'Coupons', icon: Ticket }
+  { href: '/admin/coupons', label: 'Coupons', icon: Ticket },
+  { href: '/admin/audit-logs', label: 'Audit Logs', icon: FileSearch }
 ];
 
 export default function AdminLayout({
@@ -33,6 +35,10 @@ export default function AdminLayout({
   useEffect(() => {
     if (!isLoading && !user) {
       router.replace('/login?next=/admin');
+      return;
+    }
+    if (!isLoading && user && user.role === 'admin' && !user.totpEnabled) {
+      router.replace('/account/security?enforce2fa=1');
     }
   }, [isLoading, user, router]);
 
@@ -64,6 +70,28 @@ export default function AdminLayout({
             className="mt-6 inline-flex min-h-[44px] items-center rounded-xl bg-espresso-900 px-5 text-sm font-semibold text-white"
           >
             Back to Storefront
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user.totpEnabled) {
+    return (
+      <div className="mx-auto max-w-xl px-4 py-16 text-center">
+        <div className="rounded-3xl border border-amber-200 bg-white p-8">
+          <ShieldAlert className="mx-auto h-10 w-10 text-amber-700" aria-hidden="true" />
+          <h1 className="mt-4 font-serif text-2xl font-bold text-espresso-900">
+            2FA Setup Required
+          </h1>
+          <p className="mt-2 text-sm text-espresso-600">
+            Redirecting you to Security Settings to enable Two-Factor Authentication…
+          </p>
+          <Link
+            href="/account/security?enforce2fa=1"
+            className="mt-6 inline-flex min-h-[44px] items-center rounded-xl bg-espresso-900 px-5 text-sm font-semibold text-white"
+          >
+            Set Up 2FA
           </Link>
         </div>
       </div>

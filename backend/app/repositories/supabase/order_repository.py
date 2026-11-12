@@ -156,6 +156,17 @@ class SupabaseOrderRepository(OrderRepository):
             items = self._fetch_items_map(conn, [order_id]).get(order_id, [])
             return _row_to_order(row, items)
 
+    def find_by_id_for_user(self, order_id: str, user_id: str) -> Optional[Order]:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM orders WHERE id = %s AND user_id = %s;",
+                (order_id, user_id),
+            ).fetchone()
+            if not row:
+                return None
+            items = self._fetch_items_map(conn, [order_id]).get(order_id, [])
+            return _row_to_order(row, items)
+
     def find_by_order_number(self, order_number: str) -> Optional[Order]:
         with self._pool.connection() as conn:
             row = conn.execute(

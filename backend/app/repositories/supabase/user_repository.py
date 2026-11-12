@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 from psycopg_pool import ConnectionPool
 
-from app.models.domain import PasswordResetToken, User
+from app.models.domain import EmailVerificationToken, PasswordResetToken, User
 from app.repositories.interfaces import CreateUserInput, UpdateUserInput, UserRepository
 from app.repositories.supabase.db import iso_str
 
@@ -17,6 +17,9 @@ def _row_to_user(row: dict[str, Any]) -> User:
         phone=row["phone"],
         password_hash=row["password_hash"],
         role=row["role"],
+        email_verified=bool(row.get("email_verified", False)),
+        email_verified_at=iso_str(row.get("email_verified_at")),
+        totp_enabled=bool(row.get("totp_enabled", False)),
         created_at=iso_str(row["created_at"]) or "",
         updated_at=iso_str(row["updated_at"]) or "",
     )
@@ -24,6 +27,17 @@ def _row_to_user(row: dict[str, Any]) -> User:
 
 def _row_to_reset_token(row: dict[str, Any]) -> PasswordResetToken:
     return PasswordResetToken(
+        id=row["id"],
+        user_id=row["user_id"],
+        token_hash=row["token_hash"],
+        expires_at=iso_str(row["expires_at"]) or "",
+        used_at=iso_str(row["used_at"]),
+        created_at=iso_str(row["created_at"]) or "",
+    )
+
+
+def _row_to_verify_token(row: dict[str, Any]) -> EmailVerificationToken:
+    return EmailVerificationToken(
         id=row["id"],
         user_id=row["user_id"],
         token_hash=row["token_hash"],
@@ -58,8 +72,11 @@ class SupabaseUserRepository(UserRepository):
         with self._pool.connection() as conn:
             row = conn.execute(
                 """
-                INSERT INTO users (name, email, phone, password_hash, role)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO users (
+                    name, email, phone, password_hash, role,
+                    email_verified, email_verified_at, totp_enabled
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING *;
                 """,
                 (
@@ -68,6 +85,9 @@ class SupabaseUserRepository(UserRepository):
                     data.phone.strip() if data.phone else None,
                     data.password_hash,
                     data.role,
+                    data.email_verified,
+                    data.email_verified_at,
+                    data.totp_enabled,
                 ),
             ).fetchone()
             assert row is not None
@@ -85,6 +105,18 @@ class SupabaseUserRepository(UserRepository):
         if data.password_hash is not None:
             sets.append("password_hash = %s")
             params.append(data.password_hash)
+        if data.role is not None:
+            sets.append("role = %s")
+            params.append(data.role)
+        if data.email_verified is not None:
+            sets.append("email_verified = %s")
+            params.append(data.email_verified)
+        if data.email_verified_at is not None:
+            sets.append("email_verified_at = %s")
+            params.append(data.email_verified_at)
+        if data.totp_enabled is not None:
+            sets.append("totp_enabled = %s")
+            params.append(data.totp_enabled)
 
         if not sets:
             return self.find_by_id(user_id)
@@ -137,4 +169,62 @@ class SupabaseUserRepository(UserRepository):
             conn.execute(
                 "UPDATE password_reset_tokens SET used_at = now() WHERE id = %s;",
                 (token_id,),
+            )
+
+    def save_email_verification_token(
+        self, user_id: str, token_hash: str, expires_at: str
+    ) -> EmailVerificationToken:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO email_verification_tokens (user_id, token_hash, expires_at)
+                VALUES (%s, %s, %s)
+                RETURNING *;
+                """,
+                (user_id, token_hash, expires_at),
+            ).fetchone()
+            assert row is not None
+            return _row_to_verify_token(row)
+
+    def find_email_verification_token_by_hash(
+        self, token_hash: str
+    ) -> Optional[EmailVerificationToken]:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM email_verification_tokens WHERE token_hash = %s;",
+                (token_hash,),
+            ).fetchone()
+            return _row_to_verify_token(row) if row else None
+
+    def get_latest_email_verification_token(
+        self, user_id: str
+    ) -> Optional[EmailVerificationToken]:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM email_verification_tokens
+                WHERE user_id = %s
+                ORDER BY created_at DESC
+                LIMIT 1;
+                """,
+                (user_id,),
+            ).fetchone()
+            return _row_to_verify_token(row) if row else None
+
+    def mark_email_verification_token_used(self, token_id: str) -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                "UPDATE email_verification_tokens SET used_at = now() WHERE id = %s;",
+                (token_id,),
+            )
+
+    def invalidate_unused_email_verification_tokens(self, user_id: str) -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                """
+                UPDATE email_verification_tokens
+                SET used_at = now()
+                WHERE user_id = %s AND used_at IS NULL;
+                """,
+                (user_id,),
             )
