@@ -4,6 +4,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from threading import Barrier
+from typing import Any
+from unittest.mock import MagicMock
 
 import psycopg
 import pyotp
@@ -457,3 +459,218 @@ def test_pg_oversell_last_unit_with_20_parallel_orders(pg_app: FastAPI) -> None:
             (var_id,),
         ).fetchone()[0]
     assert final_stock == 0
+
+
+def test_pg_expire_vs_webhook_race(pg_app: FastAPI) -> None:
+    """
+    Races expire_order against a verified payment webhook on a real Postgres database.
+    Asserts atomic row claim semantics: exactly one actor wins the row.
+    """
+    buyer = signup_verified_client(
+        pg_app, "PG Expire Race Buyer", "pg-expire-race@beanbox-test.in", "PgRace@123!"
+    )
+    addr_id = _create_address(buyer, "PG Expire Race Buyer")
+
+    # Add item and place order
+    assert (
+        buyer.post(
+            "/api/cart/items",
+            json={
+                "productId": "prod-chikmagalur-arabica",
+                "variantId": "chik-250-wb",
+                "quantity": 1,
+            },
+        ).status_code
+        == 201
+    )
+    order_res = buyer.post("/api/orders", json={"addressId": addr_id})
+    assert order_res.status_code == 201, order_res.text
+    order_id = order_res.json()["data"]["order"]["id"]
+    order_total = order_res.json()["data"]["order"]["pricing"]["totalPaise"]
+
+    barrier = Barrier(2, timeout=5)
+    results: dict[str, Any] = {}
+
+    def run_expire() -> None:
+        barrier.wait()
+        results["expire"] = pg_app.state.services.order_service.expire_order(order_id)
+
+    def run_webhook() -> None:
+        raw_body, signature = build_signed_webhook(
+            pg_app,
+            event_type="payment_succeeded",
+            order_id=order_id,
+            amount_paise=order_total,
+        )
+        c = new_client(pg_app)
+        barrier.wait()
+        res = c.post(
+            "/api/payments/webhook",
+            content=raw_body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Mock-Signature": signature,
+            },
+        )
+        results["webhook"] = res
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f1 = pool.submit(run_expire)
+        f2 = pool.submit(run_webhook)
+        f1.result()
+        f2.result()
+
+    test_dsn = os.environ["DATABASE_URL_TEST"]
+    with psycopg.connect(test_dsn) as conn:
+        row = conn.execute(
+            "SELECT status, stock_released, cancel_reason, payment_status FROM orders WHERE id = %s;",
+            (order_id,),
+        ).fetchone()
+
+    status, stock_released, cancel_reason, payment_status = row
+    assert status in ("paid", "cancelled")
+
+    if status == "paid":
+        # Webhook claimed row first
+        assert stock_released is False
+        assert results["expire"] is None
+        assert results["webhook"].status_code == 200
+    else:
+        # Expire claimed row first
+        assert status == "cancelled"
+        assert stock_released is True
+        assert cancel_reason == "payment_timeout"
+        # Late-payment refund handling was triggered when webhook arrived
+        assert payment_status in ("unpaid", "refunded")
+
+
+def test_pg_partial_index_used(pg_app: FastAPI) -> None:
+    """
+    Verifies that Migration 005 created the partial index idx_orders_pending_created
+    and PostgreSQL optimizer utilizes it for pending order expiry scans.
+    """
+    test_dsn = os.environ["DATABASE_URL_TEST"]
+    with psycopg.connect(test_dsn) as conn:
+        # 1. Assert index definition in pg_indexes
+        idx_row = conn.execute(
+            """
+            SELECT indexdef FROM pg_indexes
+            WHERE tablename = 'orders' AND indexname = 'idx_orders_pending_created';
+            """
+        ).fetchone()
+        assert idx_row is not None, "idx_orders_pending_created index not found in pg_indexes"
+        indexdef = idx_row[0].lower()
+        assert "status = 'pending'" in indexdef or "status = 'pending'::text" in indexdef
+        assert "created_at" in indexdef
+
+        # 2. Assert query planner utilizes index scan when seqscan is turned off
+        conn.execute("SET enable_seqscan = off;")
+        explain_res = conn.execute(
+            """
+            EXPLAIN (FORMAT TEXT)
+            SELECT id FROM orders
+            WHERE status = 'pending' AND created_at < NOW() - INTERVAL '30 minutes'
+            ORDER BY created_at ASC
+            LIMIT 100;
+            """
+        ).fetchall()
+        plan_text = "\n".join(row[0] for row in explain_res)
+        assert "idx_orders_pending_created" in plan_text
+
+
+def test_pg_concurrent_webhook_refund(pg_app: FastAPI) -> None:
+    """
+    Two threads delivering duplicate payment webhooks with DIFFERENT event IDs
+    simultaneously against an already cancelled order on PostgreSQL must produce
+    EXACTLY ONE refund call to the payment provider.
+    """
+    buyer = signup_verified_client(
+        pg_app, "PG Refund Buyer", "pg-refund@beanbox-test.in", "PgRefund@123!"
+    )
+    addr_id = _create_address(buyer, "PG Refund Buyer")
+    assert (
+        buyer.post(
+            "/api/cart/items",
+            json={
+                "productId": "prod-chikmagalur-arabica",
+                "variantId": "chik-250-wb",
+                "quantity": 1,
+            },
+        ).status_code
+        == 201
+    )
+
+    order_res = buyer.post("/api/checkout/orders", json={"shippingAddressId": addr_id})
+    assert order_res.status_code == 201, order_res.text
+    order = order_res.json()["data"]["order"]
+    order_id = order["id"]
+
+    # Mark order as cancelled and unpaid directly in Postgres
+    test_dsn = os.environ["DATABASE_URL_TEST"]
+    with psycopg.connect(test_dsn) as conn:
+        conn.execute(
+            "UPDATE orders SET status = 'cancelled', payment_status = 'unpaid' WHERE id = %s;",
+            (order_id,),
+        )
+
+    # Mock refund_payment to track calls and assert idempotency key
+    pg_app.state.services.payment_provider.refund_payment = MagicMock(return_value={"id": "re_pg_race"})
+
+    client = new_client(pg_app)
+    barrier = Barrier(2)
+    responses: list[Any] = []
+
+    def deliver_webhook(evt_id: str) -> None:
+        raw_body, signature = build_signed_webhook(
+            secret=pg_app.state.settings.mock_webhook_secret,
+            payload={
+                "id": evt_id,
+                "type": "checkout.session.completed",
+                "data": {
+                    "orderId": order_id,
+                    "sessionId": f"cs_{evt_id}",
+                    "paymentIntentId": f"pi_{evt_id}",
+                    "amountPaise": order["pricing"]["totalPaise"],
+                    "currency": "INR",
+                },
+            },
+        )
+        barrier.wait()
+        res = client.post(
+            "/api/payments/webhook",
+            content=raw_body,
+            headers={"X-BeanBox-Signature": signature},
+        )
+        responses.append(res)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f1 = pool.submit(deliver_webhook, "evt_pg_refund_race_1")
+        f2 = pool.submit(deliver_webhook, "evt_pg_refund_race_2")
+        f1.result()
+        f2.result()
+
+    assert len(responses) == 2
+    assert all(r.status_code == 200 for r in responses)
+
+    json_results = [r.json()["data"] for r in responses]
+    refunded_results = [r for r in json_results if r.get("refunded") is True]
+    duplicate_results = [r for r in json_results if r.get("duplicate") is True and r.get("refunded") is False]
+
+    assert len(refunded_results) == 1
+    assert len(duplicate_results) == 1
+
+    # Exactly ONE refund dispatched to provider with idempotency key
+    assert pg_app.state.services.payment_provider.refund_payment.call_count == 1
+    call_args = pg_app.state.services.payment_provider.refund_payment.call_args
+    assert call_args.kwargs.get("idempotency_key") == f"refund:{order_id}"
+
+    # Verify atomic Postgres row state
+    with psycopg.connect(test_dsn) as conn:
+        row = conn.execute(
+            "SELECT status, payment_status FROM orders WHERE id = %s;",
+            (order_id,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "refunded"
+    assert row[1] == "refunded"
+

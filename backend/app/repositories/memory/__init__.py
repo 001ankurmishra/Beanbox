@@ -2,6 +2,7 @@ from .address_repository import InMemoryAddressRepository
 from .audit_log_repository import InMemoryAuditLogRepository
 from .cart_repository import InMemoryCartRepository
 from .coupon_repository import InMemoryCouponRepository
+from .failed_job_repository import InMemoryFailedJobRepository
 from .login_attempt_repository import InMemoryLoginAttemptRepository
 from .oauth_repository import InMemoryOAuthAccountRepository
 from .order_repository import InMemoryOrderRepository
@@ -18,6 +19,7 @@ __all__ = [
     "InMemoryAuditLogRepository",
     "InMemoryCartRepository",
     "InMemoryCouponRepository",
+    "InMemoryFailedJobRepository",
     "InMemoryLoginAttemptRepository",
     "InMemoryOAuthAccountRepository",
     "InMemoryOrderRepository",

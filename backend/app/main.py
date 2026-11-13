@@ -89,6 +89,9 @@ def create_app(
         cache_runtime=cache_runtime,
     )
 
+    from app.worker.celery_app import celery_app
+    celery_app.conf.task_always_eager = app_settings.is_celery_eager
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         yield

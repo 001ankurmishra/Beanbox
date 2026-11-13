@@ -266,3 +266,30 @@ class SupabaseSessionRepository(SessionRepository):
                     (user_id,),
                 )
             return int(cur.rowcount or 0)
+
+    def cleanup_expired_sessions(
+        self, older_than_days: int = 30, batch_size: int = 1000
+    ) -> int:
+        total = 0
+        with self._pool.connection() as conn:
+            while True:
+                with conn.transaction():
+                    cur = conn.execute(
+                        """
+                        WITH doomed AS (
+                            SELECT id FROM sessions
+                            WHERE expires_at < now() - make_interval(days => %s)
+                               OR (revoked_at IS NOT NULL AND revoked_at < now() - make_interval(days => %s))
+                            LIMIT %s
+                        )
+                        DELETE FROM sessions
+                        WHERE id IN (SELECT id FROM doomed)
+                        RETURNING id;
+                        """,
+                        (older_than_days, older_than_days, batch_size),
+                    )
+                    deleted = len(cur.fetchall())
+                    total += deleted
+                    if deleted < batch_size:
+                        break
+        return total

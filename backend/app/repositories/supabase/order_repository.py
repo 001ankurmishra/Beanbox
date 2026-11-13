@@ -13,6 +13,7 @@ from app.models.domain import (
     OrderItem,
     OrderPricing,
     OrderStatus,
+    PaymentStatus,
 )
 from app.repositories.interfaces import (
     CreateOrderInput,
@@ -336,6 +337,104 @@ class SupabaseOrderRepository(OrderRepository):
                 RETURNING *;
                 """,
                 (cancel_reason, cancelled_at, order_id, user_id),
+            ).fetchone()
+            if not row:
+                return None
+            items = self._fetch_items_map(conn, [order_id]).get(order_id, [])
+            return _row_to_order(row, items)
+
+    def find_pending_orders_older_than(
+        self, cutoff_iso: str, limit: int = 100
+    ) -> list[Order]:
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM orders
+                WHERE status = 'pending' AND created_at < %s
+                ORDER BY created_at ASC
+                LIMIT %s;
+                """,
+                (cutoff_iso, limit),
+            ).fetchall()
+            if not rows:
+                return []
+            order_ids = [r["id"] for r in rows]
+            items_map = self._fetch_items_map(conn, order_ids)
+            return [_row_to_order(r, items_map.get(r["id"], [])) for r in rows]
+
+    def claim_expiry(
+        self,
+        order_id: str,
+        cancel_reason: str,
+        cancelled_at: str,
+    ) -> Optional[Order]:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE orders
+                SET status = 'cancelled',
+                    stock_released = true,
+                    cancel_reason = %s,
+                    cancelled_at = %s,
+                    updated_at = now()
+                WHERE id = %s
+                  AND status = 'pending'
+                  AND stock_released = false
+                RETURNING *;
+                """,
+                (cancel_reason, cancelled_at, order_id),
+            ).fetchone()
+            if not row:
+                return None
+            items = self._fetch_items_map(conn, [order_id]).get(order_id, [])
+            return _row_to_order(row, items)
+
+    def claim_refund(
+        self,
+        order_id: str,
+        status: Optional[OrderStatus] = "refunded",
+        payment_intent_id: Optional[str] = None,
+    ) -> Optional[Order]:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE orders
+                SET payment_status = 'refunded',
+                    status = CASE
+                        WHEN %s IS NOT NULL AND status IN ('paid', 'processing', 'delivered', 'cancelled') THEN %s
+                        ELSE status
+                    END,
+                    payment_intent_id = COALESCE(%s, payment_intent_id),
+                    updated_at = now()
+                WHERE id = %s
+                  AND payment_status <> 'refunded'
+                RETURNING *;
+                """,
+                (status, status, payment_intent_id, order_id),
+            ).fetchone()
+            if not row:
+                return None
+            items = self._fetch_items_map(conn, [order_id]).get(order_id, [])
+            return _row_to_order(row, items)
+
+    def revert_refund_claim(
+        self,
+        order_id: str,
+        previous_status: OrderStatus,
+        previous_payment_status: PaymentStatus,
+    ) -> Optional[Order]:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE orders
+                SET status = %s,
+                    payment_status = %s,
+                    updated_at = now()
+                WHERE id = %s
+                  AND payment_status = 'refunded'
+                RETURNING *;
+                """,
+                (previous_status, previous_payment_status, order_id),
             ).fetchone()
             if not row:
                 return None

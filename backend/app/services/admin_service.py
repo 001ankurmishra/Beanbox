@@ -37,6 +37,7 @@ from app.services.email_service import EmailService
 from app.services.order_service import OrderService
 from app.services.payment_service import PaymentProvider
 from app.utils.errors import BadRequestError, ConflictError, NotFoundError
+from app.worker.tasks_email import enqueue_email
 
 ALLOWED_STATUS_TRANSITIONS: dict[OrderStatus, list[OrderStatus]] = {
     "pending": ["paid", "cancelled"],
@@ -44,7 +45,7 @@ ALLOWED_STATUS_TRANSITIONS: dict[OrderStatus, list[OrderStatus]] = {
     "processing": ["shipped", "cancelled", "refunded"],
     "shipped": ["delivered"],
     "delivered": ["refunded"],
-    "cancelled": [],
+    "cancelled": ["refunded"],
     "refunded": [],
 }
 
@@ -211,13 +212,30 @@ class AdminService:
             )
 
         now = _now_iso()
-        updates = OrderUpdateFields(status=next_status)
         should_release_stock = (
             next_status in ("cancelled", "refunded")
             and order.status in ("pending", "paid", "processing")
             and not order.stock_released
         )
 
+        if next_status == "refunded":
+            if order.payment_status != "paid":
+                raise BadRequestError(
+                    "Cannot refund an order that was never paid",
+                    code="ORDER_NOT_PAID",
+                )
+            if should_release_stock:
+                self._order_service.release_order_resources(order)
+            refunded = self._order_service.process_order_refund(
+                order=order,
+                new_status="refunded",
+                reason=reason or "Administrative refund",
+            )
+            if not refunded:
+                raise ConflictError("Order is already refunded", code="ALREADY_REFUNDED")
+            return refunded
+
+        updates = OrderUpdateFields(status=next_status)
         if next_status == "paid":
             updates.payment_status = "paid"
             updates.paid_at = now
@@ -225,14 +243,11 @@ class AdminService:
             updates.shipped_at = now
         elif next_status == "delivered":
             updates.delivered_at = now
-        elif next_status in ("cancelled", "refunded"):
+        elif next_status == "cancelled":
             if should_release_stock:
                 updates.stock_released = True
-            if order.payment_status == "paid":
-                updates.payment_status = "refunded"
-            if next_status == "cancelled":
-                updates.cancelled_at = now
-                updates.cancel_reason = (reason or "").strip() or "Cancelled by administrator"
+            updates.cancelled_at = now
+            updates.cancel_reason = (reason or "").strip() or "Cancelled by administrator"
 
         updated = self._order_repo.transition_status(
             order.id, expected_status=order.status, updates=updates
@@ -245,16 +260,22 @@ class AdminService:
 
         if should_release_stock:
             self._order_service.release_order_resources(order)
-        if next_status in ("cancelled", "refunded") and order.payment_status == "paid":
-            self._payment_provider.refund_payment(
-                order.payment_intent_id or "", order.pricing.total_paise
+        if next_status == "cancelled" and order.payment_status == "paid":
+            refunded = self._order_service.process_order_refund(
+                order=updated,
+                new_status="cancelled",
+                reason=reason or "Cancelled by administrator",
             )
+            return refunded or updated
 
         if next_status == "shipped":
             user = self._user_repo.find_by_id(updated.user_id)
             if user:
-                self._email_service.send_order_shipped(
-                    to=user.email, customer_name=user.name, order=updated
+                enqueue_email(
+                    kind="order_shipped",
+                    payload_ids={"order_id": updated.id, "user_id": updated.user_id},
+                    email_service=self._email_service,
+                    repos=None,
                 )
 
         return updated

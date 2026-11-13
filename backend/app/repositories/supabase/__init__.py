@@ -3,6 +3,7 @@ from .audit_log_repository import SupabaseAuditLogRepository
 from .cart_repository import SupabaseCartRepository
 from .coupon_repository import SupabaseCouponRepository
 from .db import create_pg_pool
+from .failed_job_repository import SupabaseFailedJobRepository
 from .login_attempt_repository import SupabaseLoginAttemptRepository
 from .oauth_repository import SupabaseOAuthAccountRepository
 from .order_repository import SupabaseOrderRepository
@@ -19,6 +20,7 @@ __all__ = [
     "SupabaseAuditLogRepository",
     "SupabaseCartRepository",
     "SupabaseCouponRepository",
+    "SupabaseFailedJobRepository",
     "SupabaseLoginAttemptRepository",
     "SupabaseOAuthAccountRepository",
     "SupabaseOrderRepository",

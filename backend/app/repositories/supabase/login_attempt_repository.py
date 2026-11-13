@@ -127,3 +127,30 @@ class SupabaseLoginAttemptRepository(LoginAttemptRepository):
     def reset(self, key: str) -> None:
         with self._pool.connection() as conn:
             conn.execute("DELETE FROM login_attempts WHERE key = %s;", (key,))
+
+    def cleanup_stale_attempts(
+        self, idle_days: int = 7, batch_size: int = 1000
+    ) -> int:
+        total = 0
+        with self._pool.connection() as conn:
+            while True:
+                with conn.transaction():
+                    cur = conn.execute(
+                        """
+                        WITH doomed AS (
+                            SELECT id FROM login_attempts
+                            WHERE last_failed_at < now() - make_interval(days => %s)
+                              AND (locked_until IS NULL OR locked_until < now())
+                            LIMIT %s
+                        )
+                        DELETE FROM login_attempts
+                        WHERE id IN (SELECT id FROM doomed)
+                        RETURNING id;
+                        """,
+                        (idle_days, batch_size),
+                    )
+                    deleted = len(cur.fetchall())
+                    total += deleted
+                    if deleted < batch_size:
+                        break
+        return total

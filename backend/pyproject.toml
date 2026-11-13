@@ -21,6 +21,7 @@ dependencies = [
   "psycopg[binary]>=3.2.0",
   "psycopg-pool>=3.2.0",
   "redis>=5.0.0",
+  "celery>=5.4.0",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +37,7 @@ pythonpath = ["."]
 markers = [
   "pg: tests requiring an isolated local Postgres instance via DATABASE_URL_TEST (never production Supabase)",
   "redis: tests requiring a real Redis instance via REDIS_URL_TEST",
+  "celery: tests requiring a real Celery worker against REDIS_URL_TEST on DB 1",
 ]
 
 [tool.ruff]

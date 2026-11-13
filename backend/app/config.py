@@ -92,6 +92,26 @@ class Settings(BaseSettings):
     )
     redis_url_test: str = Field(default="", alias="REDIS_URL_TEST")
 
+    # Celery Background Worker & Broker (DB 1 isolated from cache on DB 0)
+    celery_broker_url: str = Field(
+        default="redis://localhost:6379/1", alias="CELERY_BROKER_URL"
+    )
+    celery_result_backend: str = Field(
+        default="", alias="CELERY_RESULT_BACKEND"
+    )
+    pending_order_ttl_minutes: int = Field(
+        default=30, alias="PENDING_ORDER_TTL_MINUTES", ge=1
+    )
+    celery_always_eager: bool = Field(
+        default=False, alias="CELERY_ALWAYS_EAGER"
+    )
+
+    @property
+    def is_celery_eager(self) -> bool:
+        if self.app_env == "test":
+            return True
+        return self.celery_always_eager
+
     @property
     def key_prefix(self) -> str:
         return f"beanbox:{self.app_env}:"

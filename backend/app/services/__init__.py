@@ -67,6 +67,7 @@ def create_services(
         google_oauth_client=oauth_client,
         settings=settings,
         session_cache=session_cache,
+        repos=repos,
     )
     products = ProductService(repos.products, catalog_cache=catalog_cache)
     cart = CartService(repos.carts, repos.products)
@@ -83,6 +84,8 @@ def create_services(
         email,
         settings,
         catalog_cache=catalog_cache,
+        audit_service=audit,
+        repos=repos,
     )
     reviews = ReviewService(repos.reviews, repos.products, repos.orders, repos.users)
     wishlist = WishlistService(repos.wishlist, repos.products)

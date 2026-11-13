@@ -251,6 +251,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_user_created ON orders (user_id, created_a
 CREATE INDEX IF NOT EXISTS idx_orders_coupon_id ON orders (coupon_id) WHERE coupon_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);
 CREATE INDEX IF NOT EXISTS idx_orders_payment_session ON orders (payment_session_id) WHERE payment_session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_orders_pending_created ON orders (created_at ASC) WHERE status = 'pending';
 
 CREATE TABLE IF NOT EXISTS order_items (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
@@ -280,6 +281,20 @@ CREATE TABLE IF NOT EXISTS payment_events (
   processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_payment_events_order_id ON payment_events (order_id) WHERE order_id IS NOT NULL;
+
+-- 7b. Failed Background Jobs (Dead Letters)
+CREATE TABLE IF NOT EXISTS failed_jobs (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  task_name TEXT NOT NULL,
+  args_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  error_message TEXT NOT NULL,
+  traceback TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 1,
+  queue TEXT NOT NULL DEFAULT 'default',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  resolved_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_failed_jobs_created_at ON failed_jobs (created_at DESC);
 
 -- 8. Reviews & Wishlist
 CREATE TABLE IF NOT EXISTS reviews (
@@ -327,6 +342,7 @@ ALTER TABLE addresses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE order_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payment_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE failed_jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reviews ENABLE ROW LEVEL SECURITY;
 ALTER TABLE wishlist_items ENABLE ROW LEVEL SECURITY;
 

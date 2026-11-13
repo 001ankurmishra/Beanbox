@@ -200,3 +200,22 @@ class InMemorySessionRepository(SessionRepository):
                     s.revoked_at = now
                     count += 1
         return count
+
+    def cleanup_expired_sessions(
+        self, older_than_days: int = 30, batch_size: int = 1000
+    ) -> int:
+        from datetime import timedelta
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=older_than_days)
+        ).isoformat().replace("+00:00", "Z")
+        with self._lock:
+            initial = len(self._sessions)
+            self._sessions = [
+                s
+                for s in self._sessions
+                if not (
+                    s.expires_at < cutoff
+                    or (s.revoked_at is not None and s.revoked_at < cutoff)
+                )
+            ]
+            return initial - len(self._sessions)

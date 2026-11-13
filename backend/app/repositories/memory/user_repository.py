@@ -216,3 +216,27 @@ class InMemoryUserRepository(UserRepository):
                 for t in self._reset_tokens
                 if not (t.user_id == user_id and t.used_at is None)
             ]
+
+    def cleanup_expired_tokens(self, batch_size: int = 1000) -> tuple[int, int]:
+        now = _now_iso()
+        with self._lock:
+            initial_v = len(self._verify_tokens)
+            self._verify_tokens = [
+                t
+                for t in self._verify_tokens
+                if not (t.expires_at < now or t.used_at is not None)
+            ]
+            v_deleted = initial_v - len(self._verify_tokens)
+
+            initial_r = len(self._reset_tokens)
+            self._reset_tokens = [
+                t
+                for t in self._reset_tokens
+                if not (t.expires_at < now or t.used_at is not None)
+            ]
+            r_deleted = initial_r - len(self._reset_tokens)
+            return v_deleted, r_deleted
+
+    def list_admins(self) -> list[User]:
+        with self._lock:
+            return [u.model_copy(deep=True) for u in self._users if u.role == "admin"]

@@ -4,6 +4,7 @@ dist/
 .venv/
 __pycache__/
 *.pyc
+celerybeat-schedule*
 *.egg-info/
 .pytest_cache/
 .ruff_cache/

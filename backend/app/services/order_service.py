@@ -1,3 +1,4 @@
+import logging
 import math
 import secrets
 from datetime import datetime, timezone
@@ -26,10 +27,12 @@ from app.repositories.interfaces import (
     OrderUpdateFields,
     PaymentEventRepository,
     ProductRepository,
+    Repositories,
     StockReservationItem,
     UserRepository,
 )
 from app.schemas.common import PaginationMeta
+from app.services.audit_service import AuditService
 from app.services.email_service import EmailService
 from app.services.payment_service import CreateCheckoutSessionInput, PaymentProvider
 from app.services.pricing_service import (
@@ -42,6 +45,9 @@ from app.utils.errors import (
     ForbiddenError,
     NotFoundError,
 )
+from app.worker.tasks_email import enqueue_email
+
+logger = logging.getLogger("beanbox.orders")
 
 CANCELLABLE_BY_CUSTOMER: frozenset[OrderStatus] = frozenset(
     {"pending", "paid", "processing"}
@@ -113,6 +119,8 @@ class OrderService:
         email_service: EmailService,
         settings: Settings,
         catalog_cache: Optional[CatalogCache] = None,
+        audit_service: Optional[AuditService] = None,
+        repos: Optional[Repositories] = None,
     ) -> None:
         self._order_repo = order_repo
         self._cart_repo = cart_repo
@@ -127,6 +135,8 @@ class OrderService:
         self._catalog_cache: CatalogCache = catalog_cache or InMemoryCatalogCache(
             enabled=False
         )
+        self._audit_service = audit_service
+        self._repos = repos
 
     def _resolve_cart_order_items(
         self, user_id: str
@@ -398,16 +408,74 @@ class OrderService:
             if updated:
                 user = self._user_repo.find_by_id(order.user_id)
                 if user:
-                    self._email_service.send_order_confirmation(
-                        to=user.email, customer_name=user.name, order=updated
+                    enqueue_email(
+                        kind="order_confirmation",
+                        payload_ids={"order_id": updated.id, "user_id": updated.user_id},
+                        email_service=self._email_service,
+                        repos=self._repos,
                     )
                 return {"received": True, "duplicate": False, "status": "paid"}
 
+            # Edge case: A successful payment webhook arrived AFTER the order expired or was cancelled!
+            # The event was claimed idempotently (claimed_evt is True).
+            # We trigger an automatic refund through the payment provider, email the customer,
+            # update the order status and payment_status to 'refunded', and write an audit log entry.
             latest = self._order_repo.find_by_id(order.id)
+            latest_status = latest.status if latest else order.status
+            if latest_status in ("cancelled", "refunded"):
+                refund_amount = (
+                    event.amount_paise
+                    if event.amount_paise is not None
+                    else order.pricing.total_paise
+                )
+                payment_intent_id = (
+                    event.payment_intent_id
+                    or (latest.payment_intent_id if latest else order.payment_intent_id)
+                    or ""
+                )
+
+                refunded_order = self.process_order_refund(
+                    order=latest or order,
+                    refund_amount=refund_amount,
+                    payment_intent_id=payment_intent_id,
+                    new_status="refunded",
+                    reason="Payment received after order was expired or cancelled",
+                )
+                if not refunded_order:
+                    return {
+                        "received": True,
+                        "duplicate": True,
+                        "status": "refunded",
+                        "refunded": False,
+                    }
+
+                if self._audit_service:
+                    self._audit_service.record(
+                        event_type="order.late_payment_refunded",
+                        outcome="success",
+                        user_id=order.user_id,
+                        target_id=order.id,
+                        metadata={
+                            "order_id": order.id,
+                            "order_number": order.order_number,
+                            "amount_paise": refund_amount,
+                            "event_id": event.event_id,
+                            "payment_intent_id": payment_intent_id,
+                            "reason": "payment_succeeded_post_cancellation",
+                        },
+                    )
+
+                return {
+                    "received": True,
+                    "duplicate": False,
+                    "status": "refunded",
+                    "refunded": True,
+                }
+
             return {
                 "received": True,
                 "duplicate": False,
-                "status": latest.status if latest else order.status,
+                "status": latest_status,
             }
 
         # payment_failed or session_expired -> conditionally claim pending->cancelled + release stock once
@@ -495,6 +563,78 @@ class OrderService:
             raise NotFoundError("Order not found")
         return order
 
+    def process_order_refund(
+        self,
+        order: Order,
+        refund_amount: Optional[int] = None,
+        payment_intent_id: Optional[str] = None,
+        new_status: Optional[OrderStatus] = "refunded",
+        reason: Optional[str] = None,
+    ) -> Optional[Order]:
+        """
+        Atomically claims and processes an order refund:
+        1. UPDATE orders SET payment_status='refunded' (and status where valid)
+           WHERE id=%s AND payment_status <> 'refunded' RETURNING *;
+        2. Calls payment provider with idempotency key (refund:{order_id}) ONLY if the claim succeeded.
+        3. If the provider call fails, reverts the claim so the order is never left in a refunded status.
+        4. Enqueues order_refunded notification email.
+        """
+        amount = (
+            refund_amount
+            if refund_amount is not None
+            else order.pricing.total_paise
+        )
+        pi_id = payment_intent_id or order.payment_intent_id or ""
+
+        # Step 1: Claim refund atomically BEFORE calling payment provider
+        claimed = self._order_repo.claim_refund(
+            order_id=order.id,
+            status=new_status,
+            payment_intent_id=pi_id or None,
+        )
+        if not claimed:
+            logger.info("Order %s already refunded; skipping duplicate refund claim", order.id)
+            return None
+
+        # Step 2: Call payment provider with idempotency key
+        idempotency_key = f"refund:{order.id}"
+        try:
+            self._payment_provider.refund_payment(
+                pi_id,
+                amount,
+                idempotency_key=idempotency_key,
+            )
+        except Exception as exc:
+            logger.error(
+                "Payment provider refund failed for order %s (intent %s); reverting refund claim: %s",
+                order.id,
+                pi_id,
+                exc,
+            )
+            self._order_repo.revert_refund_claim(
+                order_id=order.id,
+                previous_status=order.status,
+                previous_payment_status=order.payment_status,
+            )
+            raise
+
+        # Step 3: Enqueue customer notification email
+        user = self._user_repo.find_by_id(order.user_id)
+        if user:
+            enqueue_email(
+                kind="order_refunded",
+                payload_ids={
+                    "order_id": order.id,
+                    "user_id": order.user_id,
+                    "amount_paise": amount,
+                    "reason": reason or "Refund processed",
+                },
+                email_service=self._email_service,
+                repos=self._repos,
+            )
+
+        return claimed
+
     def cancel_order(
         self, order_id: str, user_id: str, reason: Optional[str] = None
     ) -> Order:
@@ -521,15 +661,44 @@ class OrderService:
 
         self._release_stock_and_coupon(claimed)
         if claimed.payment_status == "paid":
-            self._payment_provider.refund_payment(
-                claimed.payment_intent_id or "", claimed.pricing.total_paise
+            refunded_order = self.process_order_refund(
+                order=claimed,
+                new_status="cancelled",
+                reason="Customer cancelled order",
             )
-            refunded = self._order_repo.transition_status(
-                claimed.id,
-                expected_status="cancelled",
-                updates=OrderUpdateFields(payment_status="refunded"),
+            return refunded_order or claimed
+
+        return claimed
+
+    def expire_order(self, order_id: str) -> Optional[Order]:
+        """
+        Atomically expires an unpaid pending order whose TTL has passed.
+        Reuses the exact atomic claim pattern as cancel_order:
+        UPDATE orders SET status='cancelled', stock_released=true, cancel_reason='payment_timeout'
+        WHERE id=%s AND status='pending' AND stock_released=false RETURNING *.
+
+        Releases reserved variant stock and coupon, invalidates catalog cache,
+        and enqueues customer notification ONLY if the conditional claim returned a row.
+        Safe against simultaneous races with customer cancellation and payment webhook.
+        """
+        claimed = self._order_repo.claim_expiry(
+            order_id=order_id,
+            cancel_reason="payment_timeout",
+            cancelled_at=_now_iso(),
+        )
+        if not claimed:
+            return None
+
+        self._release_stock_and_coupon(claimed)
+
+        user = self._user_repo.find_by_id(claimed.user_id)
+        if user:
+            enqueue_email(
+                kind="order_expired",
+                payload_ids={"order_id": claimed.id, "user_id": claimed.user_id},
+                email_service=self._email_service,
+                repos=self._repos,
             )
-            return refunded or claimed
 
         return claimed
 

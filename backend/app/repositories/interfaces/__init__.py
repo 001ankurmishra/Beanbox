@@ -4,6 +4,7 @@ from .address_repository import AddressRepository, CreateAddressInput, UpdateAdd
 from .audit_log_repository import AuditLogRepository, CreateAuditLogInput
 from .cart_repository import CartRepository
 from .coupon_repository import CouponRepository, CreateCouponInput, UpdateCouponInput
+from .failed_job_repository import CreateFailedJobInput, FailedJobRepository
 from .login_attempt_repository import LoginAttemptRepository
 from .oauth_repository import CreateOAuthAccountInput, OAuthAccountRepository
 from .order_repository import (
@@ -50,6 +51,7 @@ class Repositories:
     reviews: ReviewRepository
     wishlist: WishlistRepository
     payment_events: PaymentEventRepository
+    failed_jobs: FailedJobRepository
 
 
 __all__ = [
@@ -60,12 +62,14 @@ __all__ = [
     "CreateAddressInput",
     "CreateAuditLogInput",
     "CreateCouponInput",
+    "CreateFailedJobInput",
     "CreateOAuthAccountInput",
     "CreateOrderInput",
     "CreateProductInput",
     "CreateReviewInput",
     "CreateSessionInput",
     "CreateUserInput",
+    "FailedJobRepository",
     "LoginAttemptRepository",
     "LowStockVariantEntry",
     "OAuthAccountRepository",

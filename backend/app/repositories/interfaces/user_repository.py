@@ -93,3 +93,9 @@ class UserRepository(ABC):
 
     @abstractmethod
     def delete_unused_tokens_for_user(self, user_id: str) -> None: ...
+
+    @abstractmethod
+    def cleanup_expired_tokens(self, batch_size: int = 1000) -> tuple[int, int]: ...
+
+    @abstractmethod
+    def list_admins(self) -> list[User]: ...

@@ -1,6 +1,7 @@
 import {
   Address,
   AdminDashboardStats,
+  AdminJobsResponse,
   AuditLogEntry,
   AuthProvidersResponse,
   CacheStats,
@@ -394,5 +395,11 @@ export const adminApi = {
       '/admin/audit-logs',
       { params }
     ),
-  cacheStats: () => apiFetch<{ stats: CacheStats }>('/admin/cache-stats')
+  cacheStats: () => apiFetch<{ stats: CacheStats }>('/admin/cache-stats'),
+  jobs: () => apiFetch<AdminJobsResponse>('/admin/jobs'),
+  retryJob: (jobId: string) =>
+    apiFetch<{ retried: boolean; jobId: string }>(
+      `/admin/jobs/failed/${encodeURIComponent(jobId)}/retry`,
+      { method: 'POST' }
+    )
 };

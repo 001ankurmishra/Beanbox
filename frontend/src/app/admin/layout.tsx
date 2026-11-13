@@ -7,6 +7,7 @@ import {
   Activity,
   Boxes,
   Coffee,
+  Cpu,
   FileSearch,
   LayoutDashboard,
   PackageCheck,
@@ -22,7 +23,8 @@ const ADMIN_LINKS = [
   { href: '/admin/inventory', label: 'Inventory', icon: Boxes },
   { href: '/admin/coupons', label: 'Coupons', icon: Ticket },
   { href: '/admin/audit-logs', label: 'Audit Logs', icon: FileSearch },
-  { href: '/admin/cache', label: 'Cache & Redis', icon: Activity }
+  { href: '/admin/cache', label: 'Cache & Redis', icon: Activity },
+  { href: '/admin/jobs', label: 'Background Jobs', icon: Cpu }
 ];
 
 export default function AdminLayout({

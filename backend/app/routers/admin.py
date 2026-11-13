@@ -27,7 +27,9 @@ from app.schemas.admin import (
 )
 from app.services import Services
 from app.services.audit_service import RequestContext
+from app.utils.errors import NotFoundError
 from app.utils.response import make_success_response
+from app.worker.celery_app import celery_app, get_broker_redis
 
 router = APIRouter(
     prefix="/api/admin",
@@ -237,3 +239,101 @@ def admin_list_audit_logs(
 @router.get("/cache-stats")
 def admin_cache_stats(request: Request):
     return make_success_response({"stats": request.app.state.cache.collect_admin_stats()})
+
+
+@router.get("/jobs")
+def admin_list_jobs(
+    request: Request,
+    principal: AuthPrincipal = Depends(require_admin),
+):
+    repos = request.app.state.repos
+    failed_jobs = repos.failed_jobs.list_all(limit=50)
+
+    # Queue lengths from Redis Broker (DB 1)
+    broker = get_broker_redis()
+    queues = []
+    for q in ["emails", "default", "maintenance"]:
+        length = 0
+        if broker is not None:
+            try:
+                length = int(broker.llen(q) or 0)
+            except Exception:
+                length = 0
+        queues.append({"name": q, "length": length})
+
+    # Last successful run times for periodic jobs (DB 0)
+    redis_client = getattr(request.app.state.cache, "redis", None)
+    sched_defs = [
+        ("expire_unpaid_orders", "every 60s", "maintenance"),
+        ("cleanup_expired_auth_data", "hourly", "maintenance"),
+        ("low_stock_digest", "daily 09:00 IST", "maintenance"),
+    ]
+    scheduled_jobs = []
+    for name, schedule, queue in sched_defs:
+        last_run: Optional[str] = None
+        if redis_client is not None:
+            try:
+                val = redis_client.get(f"beanbox:jobs:last_success:{name}")
+                if val:
+                    last_run = val if isinstance(val, str) else val.decode("utf-8")
+            except Exception:
+                pass
+        scheduled_jobs.append(
+            {
+                "name": name,
+                "schedule": schedule,
+                "queue": queue,
+                "lastRunAt": last_run,
+            }
+        )
+
+    return make_success_response(
+        {
+            "queues": queues,
+            "scheduledJobs": scheduled_jobs,
+            "failedJobs": [j.model_dump(mode="json") for j in failed_jobs],
+        }
+    )
+
+
+@router.post("/jobs/failed/{job_id}/retry")
+def admin_retry_failed_job(
+    job_id: str = Path(min_length=1, max_length=120),
+    request: Request = None,  # type: ignore[assignment]
+    principal: AuthPrincipal = Depends(require_admin),
+    ctx: RequestContext = Depends(get_request_context),
+    services: Services = Depends(get_services),
+):
+    repos = request.app.state.repos
+    job = repos.failed_jobs.find_by_id(job_id)
+    if not job:
+        raise NotFoundError("Failed job not found")
+
+    payload = job.args_json or {}
+    args = payload.get("args", []) if isinstance(payload, dict) else []
+    kwargs = payload.get("kwargs", {}) if isinstance(payload, dict) else {}
+    if not isinstance(args, (list, tuple)):
+        args = []
+    if not isinstance(kwargs, dict):
+        kwargs = {}
+
+    celery_app.send_task(
+        job.task_name,
+        args=list(args),
+        kwargs=dict(kwargs),
+        queue=job.queue,
+    )
+    repos.failed_jobs.mark_resolved(job.id)
+
+    services.audit_service.record(
+        event_type="job.retry",
+        outcome="success",
+        ctx=ctx,
+        user_id=principal.id,
+        target_id=job.id,
+        metadata={"task_name": job.task_name, "queue": job.queue},
+    )
+
+    return make_success_response(
+        {"message": f"Job {job.task_name} re-enqueued successfully", "id": job.id}
+    )

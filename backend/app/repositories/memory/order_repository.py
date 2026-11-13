@@ -3,7 +3,7 @@ from threading import RLock
 from typing import Literal, Optional
 from uuid import uuid4
 
-from app.models.domain import Order, OrderStatus
+from app.models.domain import Order, OrderStatus, PaymentStatus
 from app.repositories.interfaces import (
     CreateOrderInput,
     OrderDashboardStats,
@@ -185,6 +185,71 @@ class InMemoryOrderRepository(OrderRepository):
                     o.stock_released = True
                     o.cancel_reason = cancel_reason
                     o.cancelled_at = cancelled_at
+                    o.updated_at = _now_iso()
+                    return o.model_copy(deep=True)
+            return None
+
+    def find_pending_orders_older_than(
+        self, cutoff_iso: str, limit: int = 100
+    ) -> list[Order]:
+        with self._lock:
+            pending = [
+                o for o in self._orders
+                if o.status == "pending" and o.created_at < cutoff_iso
+            ]
+            pending.sort(key=lambda o: o.created_at)
+            return [o.model_copy(deep=True) for o in pending[:limit]]
+
+    def claim_expiry(
+        self,
+        order_id: str,
+        cancel_reason: str,
+        cancelled_at: str,
+    ) -> Optional[Order]:
+        with self._lock:
+            for o in self._orders:
+                if (
+                    o.id == order_id
+                    and o.status == "pending"
+                    and not o.stock_released
+                ):
+                    o.status = "cancelled"
+                    o.stock_released = True
+                    o.cancel_reason = cancel_reason
+                    o.cancelled_at = cancelled_at
+                    o.updated_at = _now_iso()
+                    return o.model_copy(deep=True)
+            return None
+
+    def claim_refund(
+        self,
+        order_id: str,
+        status: Optional[OrderStatus] = "refunded",
+        payment_intent_id: Optional[str] = None,
+    ) -> Optional[Order]:
+        with self._lock:
+            for o in self._orders:
+                if o.id == order_id and o.payment_status != "refunded":
+                    o.payment_status = "refunded"
+                    if status and o.status in ("paid", "processing", "delivered", "cancelled"):
+                        o.status = status
+                    if payment_intent_id:
+                        o.payment_intent_id = payment_intent_id
+                    o.updated_at = _now_iso()
+                    return o.model_copy(deep=True)
+            return None
+
+    def revert_refund_claim(
+        self,
+        order_id: str,
+        previous_status: OrderStatus,
+        previous_payment_status: PaymentStatus,
+    ) -> Optional[Order]:
+        with self._lock:
+            for o in self._orders:
+                if o.id == order_id and o.payment_status == "refunded":
+                    o.status = previous_status
+                    o.payment_status = previous_payment_status
                     o.updated_at = _now_iso()
                     return o.model_copy(deep=True)
             return None

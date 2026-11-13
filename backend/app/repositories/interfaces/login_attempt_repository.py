@@ -22,3 +22,8 @@ class LoginAttemptRepository(ABC):
 
     @abstractmethod
     def reset(self, key: str) -> None: ...
+
+    @abstractmethod
+    def cleanup_stale_attempts(
+        self, idle_days: int = 7, batch_size: int = 1000
+    ) -> int: ...

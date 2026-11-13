@@ -68,13 +68,37 @@ docker compose -f ../docker-compose.test.yml down -v
 - API Health: `http://localhost:4000/api/health`
 - Interactive OpenAPI / Swagger Docs: `http://localhost:4000/api/docs`
 
-### 3. Frontend Setup & Run (Next.js 14 on port `3000`)
+### 3. Background Jobs with Celery & Redis (DB 1)
+BeanBox processes asynchronous emails, periodic unpaid order expirations, auth cleanups, and low-stock digests using Celery and Redis.
+
+```bash
+# Start Celery Worker (prefork pool with 2 processes, consumes all 3 queues)
+make worker
+# or: celery -A app.worker.celery_app worker -l info -Q default,emails,maintenance -c 2
+
+# Start Celery Beat Scheduler (MUST run as exactly ONE instance)
+make beat
+# or: celery -A app.worker.celery_app beat -l info
+```
+
+For convenience, a root `Makefile` provides one-command shortcuts:
+- `make api` — Run FastAPI backend with auto-reload on port 4000
+- `make worker` — Run Celery worker with 2 prefork processes on queues `default,emails,maintenance`
+- `make beat` — Run single-instance Celery Beat scheduler
+- `make test` — Run pytest unit and integration test suites
+- `make test-celery` — Run real-worker Celery test suite against `REDIS_URL_TEST`
+- `make test-pg` — Run PostgreSQL concurrency and partial-index test suite
+- `make lint` — Run backend Ruff check and frontend ESLint
+- `make build` — Run Next.js production build
+
+### 4. Frontend Setup & Run (Next.js 14 on port `3000`)
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 Open `http://localhost:3000` in your browser.
+Visit `http://localhost:3000/admin/jobs` for the live **Background Jobs & Dead Letters Dashboard**.
 
 ---
 
@@ -94,4 +118,5 @@ Open `http://localhost:3000` in your browser.
 ---
 
 ## Architecture Documentation
-See [`backend/BACKEND_EXPLAINED.md`](backend/BACKEND_EXPLAINED.md) for a complete walkthrough of the FastAPI request lifecycle, `httpOnly` cookie authentication, atomic oversell prevention, webhook idempotency, worked GST calculation example, and Supabase migration guide.
+- [`JOBS_EXPLAINED.md`](JOBS_EXPLAINED.md): Complete guide to distributed task queues, ASCII task lifecycle, at-least-once delivery, idempotency, fork safety, race condition handling, failure matrix, and an 8-exercise hands-on Jobs Lab.
+- [`backend/BACKEND_EXPLAINED.md`](backend/BACKEND_EXPLAINED.md): Complete walkthrough of the FastAPI request lifecycle, `httpOnly` cookie authentication, atomic oversell prevention, webhook idempotency, worked GST calculation example, and Supabase migration guide.

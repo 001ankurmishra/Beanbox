@@ -37,3 +37,6 @@ class TwoFactorRepository(ABC):
 
     @abstractmethod
     def count_unused_recovery_codes(self, user_id: str) -> int: ...
+
+    @abstractmethod
+    def cleanup_consumed_challenges(self, batch_size: int = 1000) -> int: ...

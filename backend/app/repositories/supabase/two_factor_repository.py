@@ -159,3 +159,27 @@ class SupabaseTwoFactorRepository(TwoFactorRepository):
                 (user_id,),
             ).fetchone()
             return int(row["cnt"]) if row else 0
+
+    def cleanup_consumed_challenges(self, batch_size: int = 1000) -> int:
+        total = 0
+        with self._pool.connection() as conn:
+            while True:
+                with conn.transaction():
+                    cur = conn.execute(
+                        """
+                        WITH doomed AS (
+                            SELECT jti FROM consumed_challenges
+                            WHERE expires_at < now()
+                            LIMIT %s
+                        )
+                        DELETE FROM consumed_challenges
+                        WHERE jti IN (SELECT jti FROM doomed)
+                        RETURNING jti;
+                        """,
+                        (batch_size,),
+                    )
+                    deleted = len(cur.fetchall())
+                    total += deleted
+                    if deleted < batch_size:
+                        break
+        return total

@@ -20,6 +20,7 @@ from app.repositories.interfaces import (
     CreateUserInput,
     LoginAttemptRepository,
     OAuthAccountRepository,
+    Repositories,
     SessionRepository,
     TwoFactorRepository,
     UpdateUserInput,
@@ -52,6 +53,7 @@ from app.utils.security import (
     validate_password_policy,
     verify_password_constant_time,
 )
+from app.worker.tasks_email import enqueue_email
 
 EMAIL_VERIFICATION_TTL_HOURS = 24
 EMAIL_RESEND_COOLDOWN_SECONDS = 60
@@ -128,6 +130,7 @@ class AuthService:
         google_oauth_client: Optional[GoogleOAuthClient],
         settings: Settings,
         session_cache: Optional[SessionCache] = None,
+        repos: Optional[Repositories] = None,
     ) -> None:
         self._user_repo = user_repo
         self._session_repo = session_repo
@@ -139,6 +142,7 @@ class AuthService:
         self._google_oauth = google_oauth_client
         self._settings = settings
         self._session_cache: SessionCache = session_cache or NoopSessionCache()
+        self._repos = repos
 
     def _revoke_session_by_id(self, session_id: str, user_id: str) -> bool:
         revoked = self._session_repo.revoke_by_id(session_id, user_id)
@@ -236,11 +240,17 @@ class AuthService:
             )
         )
         if notify_new_device and has_prior and not seen_device:
-            self._email_service.send_new_device_login_notification(
-                to=user.email,
-                name=user.name,
-                ip=req_ctx.ip,
-                user_agent=req_ctx.user_agent,
+            enqueue_email(
+                kind="security_notification",
+                payload_ids={
+                    "event_id": str(uuid4()),
+                    "user_id": user.id,
+                    "action": "new_device",
+                    "ip": req_ctx.ip,
+                    "user_agent": req_ctx.user_agent,
+                },
+                email_service=self._email_service,
+                repos=self._repos,
             )
             self._audit.record(
                 event_type="new_device_login_alert",
@@ -287,19 +297,17 @@ class AuthService:
         raw_token = generate_opaque_token(32)
         token_hash = sha256_hex(raw_token)
         expires_at = _iso(_now() + timedelta(hours=EMAIL_VERIFICATION_TTL_HOURS))
-        self._user_repo.save_email_verification_token(
+        token_record = self._user_repo.save_email_verification_token(
             user_id=user.id,
             token_hash=token_hash,
             expires_at=expires_at,
         )
-        verify_url = (
-            f"{self._settings.frontend_url.rstrip('/')}/verify-email?token={raw_token}"
-        )
-        self._email_service.send_email_verification(
-            to=user.email,
-            name=user.name,
-            verify_token=raw_token,
-            verify_url=verify_url,
+        enqueue_email(
+            kind="email_verification",
+            payload_ids={"token_id": token_record.id, "user_id": user.id},
+            raw_token=raw_token,
+            email_service=self._email_service,
+            repos=self._repos,
         )
 
     def signup(
@@ -331,7 +339,12 @@ class AuthService:
                 totp_enabled=False,
             )
         )
-        self._email_service.send_welcome(to=created.email, name=created.name)
+        enqueue_email(
+            kind="welcome",
+            payload_ids={"user_id": created.id},
+            email_service=self._email_service,
+            repos=self._repos,
+        )
         self._send_verification_for_user(created)
         issued = self._issue_session(created, ctx)
         self._audit.record(
@@ -754,11 +767,17 @@ class AuthService:
             user.id, except_session_id=current_session_id
         )
         req_ctx = ctx or RequestContext()
-        self._email_service.send_password_changed_notification(
-            to=user.email,
-            name=user.name,
-            ip=req_ctx.ip,
-            user_agent=req_ctx.user_agent,
+        enqueue_email(
+            kind="security_notification",
+            payload_ids={
+                "event_id": str(uuid4()),
+                "user_id": user.id,
+                "action": "password_changed",
+                "ip": req_ctx.ip,
+                "user_agent": req_ctx.user_agent,
+            },
+            email_service=self._email_service,
+            repos=self._repos,
         )
         self._audit.record(
             event_type="password_changed",
@@ -846,19 +865,17 @@ class AuthService:
             raw_token = generate_opaque_token(32)
             token_hash = sha256_hex(raw_token)
             expires_at = _iso(_now() + timedelta(minutes=PASSWORD_RESET_TTL_MINUTES))
-            self._user_repo.save_password_reset_token(
+            token_record = self._user_repo.save_password_reset_token(
                 user_id=user.id,
                 token_hash=token_hash,
                 expires_at=expires_at,
             )
-            reset_url = (
-                f"{self._settings.frontend_url.rstrip('/')}/reset-password?token={raw_token}"
-            )
-            self._email_service.send_password_reset(
-                to=user.email,
-                name=user.name,
-                reset_token=raw_token,
-                reset_url=reset_url,
+            enqueue_email(
+                kind="password_reset",
+                payload_ids={"token_id": token_record.id, "user_id": user.id},
+                raw_token=raw_token,
+                email_service=self._email_service,
+                repos=self._repos,
             )
             self._audit.record(
                 event_type="password_reset_requested",
@@ -911,11 +928,17 @@ class AuthService:
         revoked_count = self._revoke_all_for_user(record.user_id)
         self._login_attempt_repo.reset(f"acct:{user.email.lower()}")
         req_ctx = ctx or RequestContext()
-        self._email_service.send_password_changed_notification(
-            to=user.email,
-            name=user.name,
-            ip=req_ctx.ip,
-            user_agent=req_ctx.user_agent,
+        enqueue_email(
+            kind="security_notification",
+            payload_ids={
+                "event_id": str(uuid4()),
+                "user_id": user.id,
+                "action": "password_changed",
+                "ip": req_ctx.ip,
+                "user_agent": req_ctx.user_agent,
+            },
+            email_service=self._email_service,
+            repos=self._repos,
         )
         self._audit.record(
             event_type="password_reset_completed",
@@ -1040,12 +1063,18 @@ class AuthService:
         self._two_factor_repo.replace_recovery_codes(user.id, code_hashes)
 
         req_ctx = ctx or RequestContext()
-        self._email_service.send_2fa_status_notification(
-            to=user.email,
-            name=user.name,
-            enabled=True,
-            ip=req_ctx.ip,
-            user_agent=req_ctx.user_agent,
+        enqueue_email(
+            kind="security_notification",
+            payload_ids={
+                "event_id": str(uuid4()),
+                "user_id": user.id,
+                "action": "2fa_status",
+                "enabled": True,
+                "ip": req_ctx.ip,
+                "user_agent": req_ctx.user_agent,
+            },
+            email_service=self._email_service,
+            repos=self._repos,
         )
         self._audit.record(
             event_type="2fa_enabled",
@@ -1229,12 +1258,18 @@ class AuthService:
         updated = self._user_repo.update(user.id, UpdateUserInput(totp_enabled=False))
         assert updated is not None
         req_ctx = ctx or RequestContext()
-        self._email_service.send_2fa_status_notification(
-            to=user.email,
-            name=user.name,
-            enabled=False,
-            ip=req_ctx.ip,
-            user_agent=req_ctx.user_agent,
+        enqueue_email(
+            kind="security_notification",
+            payload_ids={
+                "event_id": str(uuid4()),
+                "user_id": user.id,
+                "action": "2fa_status",
+                "enabled": False,
+                "ip": req_ctx.ip,
+                "user_agent": req_ctx.user_agent,
+            },
+            email_service=self._email_service,
+            repos=self._repos,
         )
         self._audit.record(
             event_type="2fa_disabled",
@@ -1406,7 +1441,12 @@ class AuthService:
                         provider_email=identity.email,
                     )
                 )
-                self._email_service.send_welcome(to=user.email, name=user.name)
+                enqueue_email(
+                    kind="welcome",
+                    payload_ids={"user_id": user.id},
+                    email_service=self._email_service,
+                    repos=self._repos,
+                )
                 self._audit.record(
                     event_type="signup_google",
                     outcome="success",

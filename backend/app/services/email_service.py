@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import RLock
-from typing import Literal
+from typing import Any, Literal
 
 from app.models.domain import Order
 
@@ -12,6 +12,9 @@ EmailType = Literal[
     "password_reset",
     "order_confirmation",
     "order_shipped",
+    "order_expired",
+    "order_refunded",
+    "low_stock_digest",
     "security_notification",
 ]
 
@@ -47,6 +50,21 @@ class EmailService(ABC):
     @abstractmethod
     def send_order_shipped(
         self, to: str, customer_name: str, order: Order
+    ) -> None: ...
+
+    @abstractmethod
+    def send_order_expired(
+        self, to: str, customer_name: str, order: Order
+    ) -> None: ...
+
+    @abstractmethod
+    def send_order_refunded(
+        self, to: str, customer_name: str, order: Order, amount_paise: int, reason: str = ""
+    ) -> None: ...
+
+    @abstractmethod
+    def send_low_stock_digest(
+        self, to: str, admin_name: str, low_stock_items: list[dict[str, Any]]
     ) -> None: ...
 
     @abstractmethod
@@ -155,6 +173,46 @@ class ConsoleEmailService(EmailService):
                 f"Hi {customer_name}, your freshly roasted coffee for order {order.order_number} "
                 f"is on its way to {order.shipping_address.city}, {order.shipping_address.state}."
             ),
+        )
+
+    def send_order_expired(
+        self, to: str, customer_name: str, order: Order
+    ) -> None:
+        self._dispatch(
+            to=to,
+            email_type="order_expired",
+            subject=f"BeanBox Order {order.order_number} Expired (Payment Timeout)",
+            body=(
+                f"Hi {customer_name}, order {order.order_number} has expired because payment "
+                "was not received within the 30-minute reservation window. Reserved stock has been released."
+            ),
+        )
+
+    def send_order_refunded(
+        self, to: str, customer_name: str, order: Order, amount_paise: int, reason: str = ""
+    ) -> None:
+        reason_text = f" (Reason: {reason})" if reason else ""
+        self._dispatch(
+            to=to,
+            email_type="order_refunded",
+            subject=f"Refund Issued for BeanBox Order {order.order_number}",
+            body=(
+                f"Hi {customer_name}, a refund of {_format_inr(amount_paise)} has been processed "
+                f"for order {order.order_number}{reason_text}. Funds typically reflect in 5-7 business days."
+            ),
+        )
+
+    def send_low_stock_digest(
+        self, to: str, admin_name: str, low_stock_items: list[dict[str, Any]]
+    ) -> None:
+        lines = [f"Hi {admin_name}, here is the daily BeanBox roastery low-stock alert:"]
+        for it in low_stock_items:
+            lines.append(f" - {it.get('product_name')} ({it.get('variant_label')}): Stock = {it.get('stock')}")
+        self._dispatch(
+            to=to,
+            email_type="low_stock_digest",
+            subject=f"BeanBox Roastery Alert: {len(low_stock_items)} Variants Low on Stock",
+            body="\n".join(lines),
         )
 
     def send_password_changed_notification(

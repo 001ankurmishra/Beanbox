@@ -334,3 +334,15 @@ class WishlistItem(CamelModel):
     user_id: str
     product_id: str
     created_at: str
+
+
+class FailedJob(CamelModel):
+    id: str
+    task_name: str
+    args_json: Any
+    error_message: str
+    traceback: str
+    attempts: int = 1
+    queue: str = "default"
+    created_at: str
+    resolved_at: Optional[str] = None

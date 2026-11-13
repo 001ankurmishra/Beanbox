@@ -3,7 +3,7 @@ import hmac
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -55,7 +55,12 @@ class PaymentProvider(ABC):
     ) -> VerifiedPaymentEvent: ...
 
     @abstractmethod
-    def refund_payment(self, payment_intent_id: str, amount_paise: int) -> None: ...
+    def refund_payment(
+        self,
+        payment_intent_id: str,
+        amount_paise: int,
+        idempotency_key: Optional[str] = None,
+    ) -> None: ...
 
 
 def sign_mock_webhook_payload(raw_body: bytes | str, secret: str) -> str:
@@ -70,6 +75,7 @@ class MockPaymentProvider(PaymentProvider):
     def __init__(self, frontend_url: str, webhook_secret: str) -> None:
         self._frontend_url = frontend_url.rstrip("/")
         self._webhook_secret = webhook_secret
+        self.refund_calls: list[dict[str, Any]] = []
 
     def create_checkout_session(
         self, data: CreateCheckoutSessionInput
@@ -137,7 +143,19 @@ class MockPaymentProvider(PaymentProvider):
             currency=event_data.get("currency"),
         )
 
-    def refund_payment(self, payment_intent_id: str, amount_paise: int) -> None:
+    def refund_payment(
+        self,
+        payment_intent_id: str,
+        amount_paise: int,
+        idempotency_key: Optional[str] = None,
+    ) -> None:
+        self.refund_calls.append(
+            {
+                "payment_intent_id": payment_intent_id,
+                "amount_paise": amount_paise,
+                "idempotency_key": idempotency_key,
+            }
+        )
         return None
 
 
@@ -259,12 +277,19 @@ class StripePaymentProvider(PaymentProvider):
             type="ignored",
         )
 
-    def refund_payment(self, payment_intent_id: str, amount_paise: int) -> None:
+    def refund_payment(
+        self,
+        payment_intent_id: str,
+        amount_paise: int,
+        idempotency_key: Optional[str] = None,
+    ) -> None:
         if not payment_intent_id:
             return
+        options = {"idempotency_key": idempotency_key} if idempotency_key else None
         try:
             self._client.v1.refunds.create(
-                params={"payment_intent": payment_intent_id, "amount": amount_paise}
+                params={"payment_intent": payment_intent_id, "amount": amount_paise},
+                options=options,
             )
         except stripe.StripeError as exc:
             raise AppError(

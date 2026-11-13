@@ -23,6 +23,7 @@ def make_test_settings(**overrides: Any) -> Settings:
     defaults: dict[str, Any] = {
         "PORT": 4000,
         "APP_ENV": "test",
+        "CELERY_ALWAYS_EAGER": True,
         "REPOSITORY_BACKEND": "memory",
         "FRONTEND_URL": "http://localhost:3000",
         "JWT_SECRET": "test-jwt-secret-key-at-least-32-characters-long",
@@ -51,10 +52,16 @@ def create_test_app(
     settings: Optional[Settings] = None,
     google_oauth_client: Optional[GoogleOAuthClient] = None,
 ) -> FastAPI:
-    return create_app(
+    app = create_app(
         settings=settings or make_test_settings(),
         google_oauth_client=google_oauth_client,
     )
+    set_worker_test_doubles(
+        repos=app.state.repos,
+        services=app.state.services,
+        redis_client=getattr(app.state.cache, "redis_client", None),
+    )
+    return app
 
 
 def new_client(app: FastAPI) -> TestClient:
@@ -76,6 +83,26 @@ def extract_email_token(body: str) -> str:
     match = re.search(r"Token:\s*([A-Za-z0-9_\-]+)", body)
     assert match is not None, f"Token not found in email body: {body}"
     return match.group(1)
+
+
+def set_worker_test_doubles(
+    repos: Optional[Any] = None,
+    services: Optional[Any] = None,
+    redis_client: Optional[Any] = None,
+) -> None:
+    """Injects test doubles directly into Celery worker runtime for isolated test suites."""
+    import sys
+
+    import app.worker.celery_app  # noqa: F401
+
+    worker_mod = sys.modules["app.worker.celery_app"]
+    if repos is not None:
+        worker_mod._worker_repos = repos
+    if services is not None:
+        worker_mod._worker_services = services
+    if redis_client is not None:
+        worker_mod._worker_redis_client = redis_client
+
 
 
 def enable_2fa_for_logged_in_client(client: TestClient) -> tuple[str, list[str]]:

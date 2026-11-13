@@ -285,3 +285,54 @@ class SupabaseUserRepository(UserRepository):
                     "DELETE FROM password_reset_tokens WHERE user_id = %s AND used_at IS NULL;",
                     (user_id,),
                 )
+
+    def cleanup_expired_tokens(self, batch_size: int = 1000) -> tuple[int, int]:
+        total_v = 0
+        total_r = 0
+        with self._pool.connection() as conn:
+            while True:
+                with conn.transaction():
+                    cur = conn.execute(
+                        """
+                        WITH doomed AS (
+                            SELECT id FROM email_verification_tokens
+                            WHERE expires_at < now() OR used_at IS NOT NULL
+                            LIMIT %s
+                        )
+                        DELETE FROM email_verification_tokens
+                        WHERE id IN (SELECT id FROM doomed)
+                        RETURNING id;
+                        """,
+                        (batch_size,),
+                    )
+                    deleted = len(cur.fetchall())
+                    total_v += deleted
+                    if deleted < batch_size:
+                        break
+
+            while True:
+                with conn.transaction():
+                    cur = conn.execute(
+                        """
+                        WITH doomed AS (
+                            SELECT id FROM password_reset_tokens
+                            WHERE expires_at < now() OR used_at IS NOT NULL
+                            LIMIT %s
+                        )
+                        DELETE FROM password_reset_tokens
+                        WHERE id IN (SELECT id FROM doomed)
+                        RETURNING id;
+                        """,
+                        (batch_size,),
+                    )
+                    deleted = len(cur.fetchall())
+                    total_r += deleted
+                    if deleted < batch_size:
+                        break
+
+        return total_v, total_r
+
+    def list_admins(self) -> list[User]:
+        with self._pool.connection() as conn:
+            rows = conn.execute("SELECT * FROM users WHERE role = 'admin';").fetchall()
+            return [_row_to_user(r) for r in rows]

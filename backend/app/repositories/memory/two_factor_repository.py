@@ -128,3 +128,15 @@ class InMemoryTwoFactorRepository(TwoFactorRepository):
                 for c in self._recovery_codes
                 if c.user_id == user_id and c.used_at is None
             )
+
+    def cleanup_consumed_challenges(self, batch_size: int = 1000) -> int:
+        now_dt = datetime.now(timezone.utc)
+        with self._lock:
+            expired_jtis = [
+                jti
+                for jti, exp in self._consumed_challenges.items()
+                if exp <= now_dt
+            ]
+            for jti in expired_jtis:
+                del self._consumed_challenges[jti]
+            return len(expired_jtis)

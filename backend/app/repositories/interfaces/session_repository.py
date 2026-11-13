@@ -77,3 +77,8 @@ class SessionRepository(ABC):
     def revoke_all_for_user(
         self, user_id: str, except_session_id: Optional[str] = None
     ) -> int: ...
+
+    @abstractmethod
+    def cleanup_expired_sessions(
+        self, older_than_days: int = 30, batch_size: int = 1000
+    ) -> int: ...

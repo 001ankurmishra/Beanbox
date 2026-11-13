@@ -346,3 +346,34 @@ export interface CacheStats {
   keysByDomain: Record<string, number>;
   scanTruncated: boolean;
 }
+
+export interface QueueStat {
+  name: string;
+  length: number;
+}
+
+export interface ScheduledJobStat {
+  name: string;
+  schedule: string;
+  queue: string;
+  lastRunAt: string | null;
+}
+
+export interface FailedJobRecord {
+  id: string;
+  taskName: string;
+  argsJson: Record<string, any>;
+  errorMessage: string;
+  traceback: string;
+  attempts: number;
+  queue: string;
+  createdAt: string;
+  resolvedAt: string | null;
+}
+
+export interface AdminJobsResponse {
+  brokerConnected: boolean;
+  queues: QueueStat[];
+  scheduledJobs: ScheduledJobStat[];
+  failedJobs: FailedJobRecord[];
+}

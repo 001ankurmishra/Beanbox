@@ -115,6 +115,35 @@ class OrderRepository(ABC):
     ) -> Optional[Order]: ...
 
     @abstractmethod
+    def find_pending_orders_older_than(
+        self, cutoff_iso: str, limit: int = 100
+    ) -> list[Order]: ...
+
+    @abstractmethod
+    def claim_expiry(
+        self,
+        order_id: str,
+        cancel_reason: str,
+        cancelled_at: str,
+    ) -> Optional[Order]: ...
+
+    @abstractmethod
+    def claim_refund(
+        self,
+        order_id: str,
+        status: Optional[OrderStatus] = "refunded",
+        payment_intent_id: Optional[str] = None,
+    ) -> Optional[Order]: ...
+
+    @abstractmethod
+    def revert_refund_claim(
+        self,
+        order_id: str,
+        previous_status: OrderStatus,
+        previous_payment_status: PaymentStatus,
+    ) -> Optional[Order]: ...
+
+    @abstractmethod
     def apply_webhook_transition(
         self,
         order_id: str,

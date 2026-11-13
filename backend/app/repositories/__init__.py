@@ -6,6 +6,7 @@ from app.repositories.memory import (
     InMemoryAuditLogRepository,
     InMemoryCartRepository,
     InMemoryCouponRepository,
+    InMemoryFailedJobRepository,
     InMemoryLoginAttemptRepository,
     InMemoryOAuthAccountRepository,
     InMemoryOrderRepository,
@@ -22,6 +23,7 @@ from app.repositories.supabase import (
     SupabaseAuditLogRepository,
     SupabaseCartRepository,
     SupabaseCouponRepository,
+    SupabaseFailedJobRepository,
     SupabaseLoginAttemptRepository,
     SupabaseOAuthAccountRepository,
     SupabaseOrderRepository,
@@ -54,26 +56,30 @@ def create_in_memory_repositories(seed: Optional[SeedDataset] = None) -> Reposit
         reviews=InMemoryReviewRepository(data.reviews),
         wishlist=InMemoryWishlistRepository(data.wishlist),
         payment_events=InMemoryPaymentEventRepository(),
+        failed_jobs=InMemoryFailedJobRepository(),
     )
 
 
-def create_supabase_repositories(database_url: str) -> tuple[Repositories, object]:
+def create_supabase_repositories(
+    database_url: str, pool: Optional[object] = None
+) -> tuple[Repositories, object]:
     """Creates Supabase Postgres repositories backed by a shared ConnectionPool."""
-    pool = create_pg_pool(database_url)
+    active_pool = pool or create_pg_pool(database_url)
     repos = Repositories(
-        users=SupabaseUserRepository(pool),
-        sessions=SupabaseSessionRepository(pool),
-        oauth_accounts=SupabaseOAuthAccountRepository(pool),
-        two_factor=SupabaseTwoFactorRepository(pool),
-        login_attempts=SupabaseLoginAttemptRepository(pool),
-        audit_logs=SupabaseAuditLogRepository(pool),
-        products=SupabaseProductRepository(pool),
-        carts=SupabaseCartRepository(pool),
-        coupons=SupabaseCouponRepository(pool),
-        addresses=SupabaseAddressRepository(pool),
-        orders=SupabaseOrderRepository(pool),
-        reviews=SupabaseReviewRepository(pool),
-        wishlist=SupabaseWishlistRepository(pool),
-        payment_events=SupabasePaymentEventRepository(pool),
+        users=SupabaseUserRepository(active_pool),  # type: ignore[arg-type]
+        sessions=SupabaseSessionRepository(active_pool),  # type: ignore[arg-type]
+        oauth_accounts=SupabaseOAuthAccountRepository(active_pool),  # type: ignore[arg-type]
+        two_factor=SupabaseTwoFactorRepository(active_pool),  # type: ignore[arg-type]
+        login_attempts=SupabaseLoginAttemptRepository(active_pool),  # type: ignore[arg-type]
+        audit_logs=SupabaseAuditLogRepository(active_pool),  # type: ignore[arg-type]
+        products=SupabaseProductRepository(active_pool),  # type: ignore[arg-type]
+        carts=SupabaseCartRepository(active_pool),  # type: ignore[arg-type]
+        coupons=SupabaseCouponRepository(active_pool),  # type: ignore[arg-type]
+        addresses=SupabaseAddressRepository(active_pool),  # type: ignore[arg-type]
+        orders=SupabaseOrderRepository(active_pool),  # type: ignore[arg-type]
+        reviews=SupabaseReviewRepository(active_pool),  # type: ignore[arg-type]
+        wishlist=SupabaseWishlistRepository(active_pool),  # type: ignore[arg-type]
+        payment_events=SupabasePaymentEventRepository(active_pool),  # type: ignore[arg-type]
+        failed_jobs=SupabaseFailedJobRepository(active_pool),  # type: ignore[arg-type]
     )
-    return repos, pool
+    return repos, active_pool

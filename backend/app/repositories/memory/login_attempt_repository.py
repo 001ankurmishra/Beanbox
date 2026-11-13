@@ -87,3 +87,24 @@ class InMemoryLoginAttemptRepository(LoginAttemptRepository):
     def reset(self, key: str) -> None:
         with self._lock:
             self._records.pop(key, None)
+
+    def cleanup_stale_attempts(
+        self, idle_days: int = 7, batch_size: int = 1000
+    ) -> int:
+        now_dt = datetime.now(timezone.utc)
+        cutoff = now_dt - timedelta(days=idle_days)
+        with self._lock:
+            stale_keys = []
+            for k, rec in self._records.items():
+                last_dt = datetime.fromisoformat(rec.last_failed_at.replace("Z", "+00:00"))
+                if last_dt < cutoff:
+                    if rec.locked_until:
+                        lock_dt = datetime.fromisoformat(
+                            rec.locked_until.replace("Z", "+00:00")
+                        )
+                        if lock_dt > now_dt:
+                            continue
+                    stale_keys.append(k)
+            for k in stale_keys:
+                del self._records[k]
+            return len(stale_keys)
